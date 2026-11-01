@@ -16,6 +16,23 @@ Works **100% on the host kernel driver side** using unmodified, cryptographicall
 
 ---
 
+## Real-World Proof of Concept (Kali Linux Verification)
+
+> [!TIP]
+> **100% Functional in Kali Linux**: The screenshots below show actual execution on a live system running **Kali Linux (Kernel 7.1.5+kali-amd64)** with a **Realtek RTL8852AE PCIe Wireless Adapter (`[10ec:8852]`)**.
+
+### 1. IEEE 802.11 Radiotap Capture in Wireshark
+Live 802.11 packet capture showing full promiscuous reception of Management (Beacons, Probe Requests/Responses), Control (ACK, Block Ack, RTS, CTS), and Data frames across BSSIDs, with complete per-antenna RSSI (`-18 dBm`, `-24 dBm`) and channel frequency (2462 MHz / CH 11) metadata:
+
+![Wireshark RTL8852AE Monitor Mode Capture](docs/screenshots/wireshark_monitor_capture.png)
+
+### 2. High-Performance Packet Injection Benchmark (`aireplay-ng -9`)
+Successful IEEE 802.11 diagnostic packet injection test showing **100% frame delivery** (30/30 probe requests acknowledged with sub-2ms ping times) against active APs, confirmed by `verify_monitor_diag.py` and `aireplay-ng`:
+
+![RTL8852AE aireplay-ng Packet Injection Benchmark](docs/screenshots/aireplay_packet_injection.png)
+
+---
+
 ## Why RTL8852AE Failed Monitor Mode & Injection Upstream
 
 Thousands of Linux and Kali Linux users report that modern Wi-Fi 6 laptops with Realtek RTL8852AE adapters fail when running `airmon-ng` or attempting packet injection. Common upstream issues in `lwfinger/rtw89` and mainline Linux kernels:

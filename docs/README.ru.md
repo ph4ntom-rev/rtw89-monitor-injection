@@ -8,6 +8,23 @@
 
 ---
 
+## Наглядные доказательства работоспособности (Верификация в Kali Linux)
+
+> [!TIP]
+> **100% работоспособность подтверждена**: На приведённых ниже реальных скриншотах продемонстрирована работа пропатченного драйвера в **Kali Linux (ядро 7.1.5+kali-amd64)** на реальном адаптере **Realtek RTL8852AE PCIe (`[10ec:8852]`)**.
+
+### 1. Захват пакетов IEEE 802.11 Radiotap в Wireshark
+Перехват реального радиоэфира в режиме монитора: приём кадров Management (Beacon), Control (ACK, Block Ack, RTS, CTS) и Data со всеми метаданными Radiotap (2462 МГц, RSSI `-18 dBm` / `-24 dBm`):
+
+![Wireshark RTL8852AE Monitor Mode Capture](screenshots/wireshark_monitor_capture.png)
+
+### 2. Тест инъекции пакетов на 100% (`aireplay-ng -9`)
+Успешный тест инъекции сырых кадров через `aireplay-ng -9`: **100% успешной доставки (30/30 ответов от точек доступа)**:
+
+![RTL8852AE aireplay-ng Packet Injection Benchmark](screenshots/aireplay_packet_injection.png)
+
+---
+
 ## Какие ограничения и ошибки `rtw89` исправляет проект
 
 1. **Настройка аппаратного MAC-фильтра приёма (`reg.h` / `mac.c`)**

@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  verify:
+    name: Patcher & Clean-Room Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python syntax
+        run: python3 -m py_compile scripts/patch_rtw89.py scripts/verify_monitor_diag.py tests/test_patch_rtw89.py
+
+      - name: Check shell script syntax
+        run: bash -n scripts/build_module.sh
+
+      - name: Run Gen 1 & Gen 2 patch/revert unit tests
+        run: python3 -m unittest discover -s tests -v

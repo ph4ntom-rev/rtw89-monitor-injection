@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause
+#
+# build_module.sh
+# Linux Kbuild helper for patching, compiling, reloading, installing, or
+# uninstalling the rtw89 monitor-mode driver extension on Linux 6.1 - 7.x+.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KVER="$(uname -r)"
+KBUILD_DIR="/lib/modules/${KVER}/build"
+UPDATES_DIR="/lib/modules/${KVER}/updates/rtw89"
+MODPROBE_CONF="/etc/modprobe.d/rtw89-monitor.conf"
+
+RTW89_DIR=""
+DO_CHECK_ONLY=0
+DO_RELOAD=0
+DO_INSTALL=0
+DO_UNINSTALL=0
+
+usage() {
+    cat <<EOF
+Usage:
+  $0 --check-env
+  $0 --rtw89-dir /path/to/rtw89 [--reload] [--install]
+  $0 --uninstall
+
+Options:
+  --check-env        Inspect kernel version, headers, RTL8852AE PCIe state, and dmesg
+  --rtw89-dir <dir>  Patch <dir> and compile rtw89 kernel modules via Kbuild
+  --reload           Unload currently loaded rtw89 modules and load the newly built modules
+  --install          Install built .ko files into ${UPDATES_DIR} and run depmod -a
+  --uninstall        Remove ${UPDATES_DIR} override and restore stock distro rtw89 modules
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --check-env)
+            DO_CHECK_ONLY=1
+            shift
+            ;;
+        --rtw89-dir)
+            RTW89_DIR="$(realpath "$2")"
+            shift 2
+            ;;
+        --reload)
+            DO_RELOAD=1
+            shift
+            ;;
+        --install)
+            DO_INSTALL=1
+            shift
+            ;;
+        --uninstall)
+            DO_UNINSTALL=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "[ERROR] Unknown argument: $1" >&2
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+unload_rtw89_stack() {
+    for mod in rtw89_8852ae rtw89_8852be rtw89_8852ce rtw89_8852a rtw89_pci rtw89_core \
+               rtw_8852ae rtw_8852a rtw89pci rtw89core; do
+        if lsmod | awk '{print $1}' | grep -qx "${mod}"; then
+            sudo rmmod "${mod}" && echo "  unloaded ${mod}"
+        fi
+    done
+}
+
+if [[ ${DO_UNINSTALL} -eq 1 ]]; then
+    echo "=== Uninstalling rtw89 updates override for kernel ${KVER} ==="
+    sudo rm -rf "${UPDATES_DIR}"
+    sudo rm -f "${MODPROBE_CONF}"
+    sudo depmod -a "${KVER}"
+    unload_rtw89_stack
+    sudo modprobe rtw89_8852ae || true
+    echo "[OK] Restored distribution rtw89 modules."
+    exit 0
+fi
+
+echo "=== [1] Linux Kernel & RTL8852AE Environment Check ==="
+echo "  Kernel release (uname -r) : ${KVER}"
+if [[ -d "${KBUILD_DIR}" ]]; then
+    echo "  Kernel build headers      : FOUND (${KBUILD_DIR})"
+else
+    echo "  Kernel build headers      : MISSING (${KBUILD_DIR})"
+    echo "    -> Debian/Ubuntu/Kali : sudo apt install linux-headers-\$(uname -r) build-essential"
+    echo "    -> Fedora/RHEL        : sudo dnf install kernel-devel-\$(uname -r) gcc make"
+    echo "    -> Arch Linux         : sudo pacman -S linux-headers base-devel"
+fi
+
+if command -v lspci >/dev/null 2>&1; then
+    echo "  PCIe Realtek 8852AE check :"
+    lspci -nn -d 10ec:8852 || echo "    (no 10ec:8852 PCIe device reported by lspci)"
+fi
+
+echo "  Recent rtw89 dmesg lines  :"
+sudo dmesg 2>/dev/null | grep -iE "rtw89|8852a" | tail -n 10 || true
+
+if [[ ${DO_CHECK_ONLY} -eq 1 ]]; then
+    cat <<EOF
+
+=== Obtaining matching rtw89 kernel driver sources ===
+  Option A (Matching distribution kernel source package - recommended):
+    sudo apt install linux-source
+    mkdir -p ~/rtw89_build && tar -xf /usr/src/linux-source-*.tar.xz \\
+      --strip-components=6 -C ~/rtw89_build \\
+      --wildcards '*/drivers/net/wireless/realtek/rtw89/*'
+    $0 --rtw89-dir ~/rtw89_build --install
+
+  Option B (Upstream out-of-tree rtw89 repository):
+    git clone https://github.com/lwfinger/rtw89.git ~/rtw89_src
+    $0 --rtw89-dir ~/rtw89_src --reload
+EOF
+    exit 0
+fi
+
+if [[ -z "${RTW89_DIR}" ]]; then
+    echo "[ERROR] --rtw89-dir is required unless --check-env or --uninstall is used." >&2
+    usage
+    exit 1
+fi
+
+if [[ ! -d "${KBUILD_DIR}" ]]; then
+    echo "[ERROR] Kernel headers directory ${KBUILD_DIR} is missing." >&2
+    exit 1
+fi
+
+echo ""
+echo "=== [2] Applying rtw89 Monitor & Diagnostic TX Patchset ==="
+python3 "${SCRIPT_DIR}/patch_rtw89.py" --rtw89-dir "${RTW89_DIR}" --apply
+
+echo ""
+echo "=== [3] Compiling rtw89 Kernel Modules ==="
+make -C "${KBUILD_DIR}" M="${RTW89_DIR}" -j"$(nproc)" modules
+
+echo ""
+echo "Built modules in ${RTW89_DIR}:"
+ls -lh "${RTW89_DIR}"/*.ko
+
+if [[ ${DO_INSTALL} -eq 1 ]]; then
+    echo ""
+    echo "=== [4] Installing Modules into ${UPDATES_DIR} ==="
+    sudo mkdir -p "${UPDATES_DIR}"
+    sudo cp -f "${RTW89_DIR}"/*.ko "${UPDATES_DIR}/"
+    printf "options rtw89_core disable_ps_mode=y\n" | sudo tee "${MODPROBE_CONF}" >/dev/null
+    sudo depmod -a "${KVER}"
+    unload_rtw89_stack
+    sudo modprobe rtw89_8852ae
+    echo "[OK] Installed and loaded rtw89_8852ae via modprobe."
+elif [[ ${DO_RELOAD} -eq 1 ]]; then
+    echo ""
+    echo "=== [4] Reloading rtw89 Modules (live session) ==="
+    unload_rtw89_stack
+
+    if [[ -f "${RTW89_DIR}/rtw89_core.ko" ]]; then
+        sudo insmod "${RTW89_DIR}/rtw89_core.ko" disable_ps_mode=y
+        [[ -f "${RTW89_DIR}/rtw89_8852a.ko" ]] && sudo insmod "${RTW89_DIR}/rtw89_8852a.ko"
+        [[ -f "${RTW89_DIR}/rtw89_pci.ko" ]]   && sudo insmod "${RTW89_DIR}/rtw89_pci.ko"
+        sudo insmod "${RTW89_DIR}/rtw89_8852ae.ko"
+    elif [[ -f "${RTW89_DIR}/rtw89core.ko" ]]; then
+        sudo insmod "${RTW89_DIR}/rtw89core.ko" disable_ps_mode=y
+        [[ -f "${RTW89_DIR}/rtw_8852a.ko" ]]   && sudo insmod "${RTW89_DIR}/rtw_8852a.ko"
+        [[ -f "${RTW89_DIR}/rtw89pci.ko" ]]    && sudo insmod "${RTW89_DIR}/rtw89pci.ko"
+        sudo insmod "${RTW89_DIR}/rtw_8852ae.ko"
+    else
+        echo "[ERROR] Could not locate built rtw89_core.ko / rtw89core.ko" >&2
+        exit 1
+    fi
+fi
+
+if [[ ${DO_INSTALL} -eq 1 || ${DO_RELOAD} -eq 1 ]]; then
+    echo ""
+    echo "=== [5] Post-Load Kernel Log Check ==="
+    sleep 1
+    sudo dmesg | grep -iE "rtw89|monitor mode initialized" | tail -n 15 || true
+fi

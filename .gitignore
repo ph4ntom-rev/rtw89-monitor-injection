@@ -1,0 +1,61 @@
+# Never commit firmware binaries, ROM images, or analysis artifacts
+*.bin
+*.fw
+*.rom
+*.img
+*.elf
+*.i64
+*.idb
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.ghidra
+*.gpr
+*.rep/
+
+# Linux Kbuild / kernel module build artifacts
+*.o
+*.ko
+*.ko.xz
+*.ko.zst
+*.mod
+*.mod.c
+*.mod.o
+*.cmd
+.*.cmd
+*.dwo
+*.su
+*.lst
+*.symtypes
+*.order
+modules.order
+Module.symvers
+.tmp_versions/
+.cache.mk
+rtw89_mon_autoconf.h
+
+# Patcher backup files & temporary trees
+*.orig
+*.rej
+build/
+dist/
+*.pcap
+*.pcapng
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+
+# OS & editor metadata
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/

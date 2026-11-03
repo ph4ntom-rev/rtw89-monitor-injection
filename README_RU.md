@@ -1,5 +1,8 @@
 # Realtek RTL8852AE / rtw89 — Патч режима мониторинга (Monitor Mode) и инъекции пакетов (Packet Injection)
 
+[![Linux Kernel Upstream: Submitted (v2)](https://img.shields.io/badge/Linux%20Kernel%20Upstream-v2%20Submitted-blue.svg)](https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/)
+[![Lore Archive: linux-wireless](https://img.shields.io/badge/lore.kernel.org-linux--wireless-success.svg)](https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/)
+[![checkpatch.pl: strict 0/0/0](https://img.shields.io/badge/checkpatch.pl--strict-0%20errors%20%7C%200%20warnings-brightgreen.svg)](patches/v2/)
 [![License: GPL-2.0 OR BSD-3-Clause](https://img.shields.io/badge/License-GPL--2.0%20OR%20BSD--3--Clause-blue.svg)](LICENSE)
 [![Linux Kernel](https://img.shields.io/badge/Linux-6.1%20--%207.x%2B-success.svg)](docs/ARCHITECTURE.md)
 [![Kali Linux](https://img.shields.io/badge/Kali%20Linux-Проверено-darkviolet.svg)](README_RU.md#быстрый-старт-в-kali-linux--ubuntu--debian)
@@ -7,6 +10,23 @@
 [![Firmware Safety](https://img.shields.io/badge/Firmware-100%25%20Stock%20Signed-orange.svg)](README_RU.md#правовая-информация-и-соответствие-регуляторным-нормам)
 
 **[English](README.md) | [Русская документация](README_RU.md) | [Техническая архитектура (EN)](docs/ARCHITECTURE.md)**
+
+> [!IMPORTANT]
+> ### 🚀 Официальная серия патчей ядра Linux (Серия v2)
+> Данная серия патчей прошла строжайший аудит утилитой `checkpatch.pl --strict` (**0 errors, 0 warnings, 0 checks**) и официально отправлена в рассылку ядра **Linux Wireless Mailing List (`linux-wireless@vger.kernel.org`)** и мейнтейнерам подсистемы:
+> * **Патч 1/2**: `[PATCH v2 1/2] wifi: rtw89: fix RX filter configuration for monitor mode`  
+>   🔗 [Архив ядра lore.kernel.org (Message-ID: `<179371849554.20972.16232816164394690660@ph4ntom-rev.uz>`)](https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/)
+> * **Патч 2/2**: `[PATCH v2 2/2] wifi: rtw89: support raw frame injection on standalone monitor interface`  
+>   🔗 [Архив ядра lore.kernel.org (Message-ID: `<179371849554.20972.4737532522625772373@ph4ntom-rev.uz>`)](https://lore.kernel.org/linux-wireless/179371849554.20972.4737532522625772373@ph4ntom-rev.uz/)
+>
+> **Быстрое применение патчей через Git (`git am`)**:
+> ```bash
+> # Применение официальных апстрим-патчей напрямую к дереву ядра Linux:
+> git am patches/v2/v2-0001-wifi-rtw89-fix-RX-filter-configuration-for-monito.patch
+> git am patches/v2/v2-0002-wifi-rtw89-support-raw-frame-injection-on-standal.patch
+> ```
+
+---
 
 Патчсет и модуль расширения для штатного открытого драйвера ядра Linux **`rtw89`** (**Realtek RTL8852AE** PCIe `[10ec:8852]`, а также совместимых чипсетов **RTL8852BE** и **RTL8852CE**).
 
@@ -40,35 +60,41 @@
 * *«airodump-ng не видит пакеты или зависает»*
 * *«При попытке отправки кадров падает ядро (kernel NULL pointer dereference)»*
 
-В результате реверс-инжиниринга регистров и протокола общения хоста с RISC-V контроллером прошивки были выявлены и устранены **четыре ключевые причины**:
+В результате реверс-инжиниринга регистров и протокола общения хоста с микрокодом прошивки были выявлены и устранены **четыре ключевые причины**:
 
-1. **Аппаратная фильтрация кадров MAC RX и Address CAM (`reg.h` / `mac.c`)**
-   * *Проблема*: Регистры Band 0 MAC по умолчанию сбрасывают кадры Control (ACK, RTS, CTS, BlockAck) и чужие Data-кадры, не совпавшие с `ADDR_CAM`, а сканирование может оставлять фильтр на паузе (`R_AX_PKT_CTRL_B0_PAUSE`).
-   * *Решение*: Модуль `rtw89_mon` настраивает регистры `R_AX_RX_FLTR_OPT` (`0xCE20`), `R_AX_CTRL_FLTR` (`0xCE24`), `R_AX_MGNT_FLTR` (`0xCE28`), `R_AX_DATA_FLTR` (`0xCE2C`) маской `0x55555555`, учитывает `FIF_FCSFAIL` и восстанавливает фильтр при смене каналов (`rtw89_set_channel()`).
-2. **Паника ядра из-за разыменования `NULL`-указателя `vif` при инъекции (`mac80211.c`, `core.c`)**
-   * *Проблема*: В `rtw89_ops_tx()` и `rtw89_core_tx_write()` макрос `vif_to_rtwvif(vif)` вызывался до проверки `info->control.vif != NULL`.
-   * *Решение*: Функция `rtw89_mon_resolve_tx_vif()` безопасно разрешает активный мониторный интерфейс до разыменования.
+1. **Аппаратная фильтрация кадров MAC RX и Address CAM (`mac80211.c`)**
+   * *Проблема*: Регистры Band 0 MAC по умолчанию сбрасывают кадры Control (ACK, RTS, CTS, BlockAck) и чужие Data-кадры, не совпавшие с `ADDR_CAM`.
+   * *Решение (v2)*: Логика интегрирована непосредственно в штатную функцию `rtw89_ops_configure_filter()`. При активном флаге `IEEE80211_CONF_MONITOR` сбрасываются биты CAM-фильтрации и проверки BSSID маяков (`B_AX_A_UC_CAM_MATCH`, `B_AX_A_BC_CAM_MATCH`, `B_AX_A_MC_LIST_CAM_MATCH`, `B_AX_A_BCN_CHK_EN`, `B_AX_UID_FILTER_MASK`) и выставляется `B_AX_A_PWR_MGNT`. Корректно настраивает оба MAC-индекса (при включенном DBCC) и возвращает фильтр в исходное состояние при выходе из монитора.
+2. **Паника ядра из-за разыменования `NULL`-указателя `vif` и безопасная RCU-очистка (`mac80211.c`, `core.c`)**
+   * *Проблема*: В `rtw89_ops_tx()` макрос `vif_to_rtwvif(vif)` вызывался до проверки `info->control.vif != NULL`. А при удалении интерфейса во время активной передачи возникали гонки памяти (Use-After-Free).
+   * *Решение (v2)*: Указатель `pure_monitor_mode_vif` защищен RCU (`__rcu` в `core.h`). Разыменование в `rtw89_ops_tx()` обернуто в `rcu_read_lock()` с использованием макроса `rtwvif_to_vif()`. При удалении интерфейса в `rtw89_ops_remove_interface()` обнуление указателя через `rcu_assign_pointer(..., NULL)` и барьер памяти `synchronize_rcu()` вызываются в самом начале функции до освобождения аппаратных ресурсов и CAM-таблиц.
 3. **Некорректный индекс скорости и пропуск `TXWD_INFO` (`core.c`)**
    * *Проблема*: При отсутствии явной скорости подсистема `mac80211` выставляет знаковое значение `s8 rates[0].idx = -1`, которое приводилось к `u8` (`255`), вызывая сбой дескриптора передачи.
-   * *Решение*: `rtw89_mon_fixup_tx_desc()` выставляет корректную скорость (`RTW89_HW_RATE_OFDM6` — 6 Мбит/с), включает флаги `en_wd_info`, `use_rate`, `dis_data_fb` и ограничивает повторы (`tx_cnt_lmt = 1`) для кадров с флагом `IEEE80211_TX_CTL_NO_ACK`.
-4. **Неинициализированный контекст планировщика `mac_id` в прошивке (`fw.h`)**
-   * *Проблема*: Выделенный для монитора `mac_id` оставался на паузе в планировщике прошивки, блокируя передачу.
-   * *Решение*: `rtw89_mon_add_vif_post()` инициализирует таблицы `h2c_default_cmac_tbl` / `h2c_default_dmac_tbl`, регистрирует контекст через `rtw89_fw_h2c_join_info()` с ролью `RTW89_SELF_ROLE_AP` и типом `RTW89_NET_TYPE_NO_LINK`, снимает паузу через `rtw89_fw_h2c_macid_pause()` и сбрасывает бит в `R_AX_MACID_SLEEP_0` (`0xC2C0`).
+   * *Решение (v2)*: Переменная объявлена как знаковая `s8 idx`. При `idx < 0` выбирается гарантированная базовая скорость `RTW89_HW_RATE_OFDM6` (6 Мбит/с), выставляются флаги `use_rate`, `dis_data_fb` и безусловно включается `en_wd_info = true`, а также ограничиваются повторы (`tx_cnt_lmt = 1`) для кадров `IEEE80211_TX_CTL_NO_ACK`.
+4. **Неинициализированный контекст планировщика `mac_id` и 4 банка регистров сна (`mac.c`, `mac80211.c`)**
+   * *Проблема*: Выделенный для монитора `mac_id` оставался на паузе в планировщике прошивки, а регистры сна MACID блокировали передачу.
+   * *Решение (v2)*: `rtw89_ops_add_interface()` инициализирует таблицы `h2c_default_cmac_tbl` / `h2c_default_dmac_tbl`, регистрирует контекст через `rtw89_fw_h2c_join_info()` с ролью `RTW89_SELF_ROLE_AP` и типом `RTW89_NET_TYPE_NO_LINK`, а функция `rtw89_mac_unpause_macid()` снимает паузу с очередей прошивки и очищает все 4 банка регистров сна `R_AX_MACID_SLEEP_0..3`. В `rtw89_chip_rfk_channel_for_pure_mon_vif()` макросы `lockdep_assert_wiphy` и `rcu_dereference_protected` исключают предупреждения переключения контекста во время калибровки радиочастот.
 
 ---
 
-## Совместимость с ядрами Linux
+## Быстрый старт: Применение патчей апстрима через `git am`
 
-Скрипт установки `scripts/patch_rtw89.py` автоматически определяет версию драйвера:
+Для сборки собственного ядра или интеграции в пакеты дистрибутивов:
 
-| Поколение API | Версии ядер Linux | Архитектура VIF и блокировок | Примеры дистрибутивов |
-| :--- | :--- | :--- | :--- |
-| **API Gen 1** | `Linux 6.1 – 6.10` | `struct rtw89_vif`, `rtwdev->mutex` | Debian 12 (Bookworm), Ubuntu 22.04 LTS |
-| **API Gen 2** | `Linux 6.11 – 7.x+` и `lwfinger/rtw89` | MLO `struct rtw89_vif_link`, `pure_monitor_mode_vif`, `wiphy_lock` | Kali Linux 2024+, Ubuntu 24.04+, Arch Linux, Fedora |
+```bash
+git clone https://github.com/ph4ntom-rev/rtw89-monitor-injection.git
+cd /path/to/linux-source-tree
+
+# Применить оба патча v2:
+git am /path/to/rtw89-monitor-injection/patches/v2/*.patch
+
+# Проверить коммиты в дереве:
+git log -n 2 --oneline
+```
 
 ---
 
-## Быстрый старт в Kali Linux / Ubuntu / Debian
+## Быстрый старт: Сборка модуля в Kali Linux / Ubuntu / Debian
 
 ### 1. Установка заголовков ядра и утилит сборки
 ```bash

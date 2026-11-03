@@ -1,0 +1,54 @@
+From 427d3c8069a8a256b6b2e411baecd544b4ea8c0e Mon Sep 17 00:00:00 2001
+From: ph4ntom-rev <owner@ph4ntom-rev.uz>
+Date: Tue, 3 Nov 2026 19:34:58 +0500
+Subject: [PATCH v2 1/2] wifi: rtw89: fix RX filter configuration for monitor
+ mode
+
+In upstream rtw89, enabling monitor mode (IEEE80211_CONF_MONITOR)
+configures basic B_AX_SNIFFER_MODE in R_AX_RX_FLTR_OPT. However, on
+RTW89_CHIP_AX hardware (specifically RTL8852AE), Control frames (ACK,
+RTS, CTS, BlockAck) and non-matching BSSID frames remain suppressed by
+the hardware MAC Address CAM filters.
+
+To ensure promiscuous capture of all 802.11 management, control, and
+data frames:
+1. Clear unicast, broadcast, and multicast CAM match drops and beacon
+   BSSID checks in rx_fltr when IEEE80211_CONF_MONITOR is active.
+2. Ensure power management frames are delivered by setting B_AX_A_PWR_MGNT.
+3. Apply the adjusted filter across all active MAC indices (RTW89_MAC_0
+   and RTW89_MAC_1 for DBCC) without clobbering rtwdev->hal.rx_fltr,
+   allowing the default filter to be restored when leaving monitor mode.
+
+Signed-off-by: ph4ntom-rev <owner@ph4ntom-rev.uz>
+---
+v1 -> v2:
+ - Integrate RX filter adjustment directly into rtw89_ops_configure_filter()
+   rather than maintaining a separate helper that overwrote hal.rx_fltr.
+ - Configure both MAC 0 and MAC 1 (when DBCC is enabled) seamlessly.
+ - Remove manual register writes to subtype filters and preserve standard
+   filter restoration when exiting monitor mode.
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index 0672d13..33a6598 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -369,6 +369,15 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
+ 		rx_fltr &= ~B_AX_A_A1_MATCH;
+ 	}
+ 
++	if (hw->conf.flags & IEEE80211_CONF_MONITOR) {
++		rx_fltr &= ~(B_AX_A_UC_CAM_MATCH |
++			     B_AX_A_BC_CAM_MATCH |
++			     B_AX_A_MC_LIST_CAM_MATCH |
++			     B_AX_A_BCN_CHK_EN |
++			     B_AX_UID_FILTER_MASK);
++		rx_fltr |= B_AX_A_PWR_MGNT;
++	}
++
+ 	rtw89_mac_set_rx_fltr(rtwdev, RTW89_MAC_0, rx_fltr);
+ 	if (!rtwdev->dbcc_en)
+ 		return;
+-- 
+2.53.0

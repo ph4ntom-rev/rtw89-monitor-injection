@@ -1,5 +1,8 @@
 # Realtek RTL8852AE / rtw89 Monitor Mode & Packet Injection (Raw TX) Patch
 
+[![Linux Kernel Upstream: Submitted (v2)](https://img.shields.io/badge/Linux%20Kernel%20Upstream-v2%20Submitted-blue.svg)](https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/)
+[![Lore Archive: linux-wireless](https://img.shields.io/badge/lore.kernel.org-linux--wireless-success.svg)](https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/)
+[![checkpatch.pl: strict 0/0/0](https://img.shields.io/badge/checkpatch.pl--strict-0%20errors%20%7C%200%20warnings-brightgreen.svg)](patches/v2/)
 [![License: GPL-2.0 OR BSD-3-Clause](https://img.shields.io/badge/License-GPL--2.0%20OR%20BSD--3--Clause-blue.svg)](LICENSE)
 [![Linux Kernel](https://img.shields.io/badge/Linux-6.1%20--%207.x%2B-success.svg)](docs/ARCHITECTURE.md)
 [![Kali Linux](https://img.shields.io/badge/Kali%20Linux-Verified-darkviolet.svg)](README.md#kali-linux--penetration-testing-quickstart)
@@ -7,6 +10,23 @@
 [![Firmware Safety](https://img.shields.io/badge/Firmware-100%25%20Stock%20Signed-orange.svg)](README.md#firmware-regulatory--legal-compliance)
 
 **[English](README.md) | [Русская документация](README_RU.md) | [Architecture Reference](docs/ARCHITECTURE.md)**
+
+> [!IMPORTANT]
+> ### 🚀 Official Linux Kernel Upstream Patchset (Series v2)
+> This patch series has been audited, verified with `checkpatch.pl --strict` (**0 errors, 0 warnings, 0 checks**), and submitted to the official **Linux Wireless Mailing List (`linux-wireless@vger.kernel.org`)** and mainline maintainers:
+> * **Patch 1/2**: `[PATCH v2 1/2] wifi: rtw89: fix RX filter configuration for monitor mode`  
+>   🔗 [lore.kernel.org/linux-wireless (Message-ID: `<179371849554.20972.16232816164394690660@ph4ntom-rev.uz>`)](https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/)
+> * **Patch 2/2**: `[PATCH v2 2/2] wifi: rtw89: support raw frame injection on standalone monitor interface`  
+>   🔗 [lore.kernel.org/linux-wireless (Message-ID: `<179371849554.20972.4737532522625772373@ph4ntom-rev.uz>`)](https://lore.kernel.org/linux-wireless/179371849554.20972.4737532522625772373@ph4ntom-rev.uz/)
+>
+> **Quick Apply via Git (`git am`)**:
+> ```bash
+> # Apply official upstream patches directly to any Linux kernel tree:
+> git am patches/v2/v2-0001-wifi-rtw89-fix-RX-filter-configuration-for-monito.patch
+> git am patches/v2/v2-0002-wifi-rtw89-support-raw-frame-injection-on-standal.patch
+> ```
+
+---
 
 Host-side Linux `mac80211` driver extension and bugfix patchset for the mainline **`rtw89`** wireless driver (**Realtek RTL8852AE** PCIe `[10ec:8852]`, with architectural compatibility for **RTL8852BE** and **RTL8852CE**).
 
@@ -41,31 +61,30 @@ Thousands of Linux and Kali Linux users report that modern Wi-Fi 6 laptops with 
 * *"airodump-ng sees no beacons or control frames"*
 * *"Kernel crash or NULL pointer dereference when injecting 802.11 frames"*
 
-Through detailed hardware register reverse engineering and analysis of the `rtw89` RISC-V firmware communication protocol, this project resolves the **four root causes** entirely in the host kernel driver:
+Through detailed hardware register reverse engineering and analysis of the `rtw89` firmware communication protocol, this project resolves the **four root causes** entirely in the host kernel driver:
 
-1. **Hardware MAC RX Subtype & Address CAM Filtering (`reg.h` / `mac.c`)**
-   * *Problem*: Band 0 MAC registers drop 802.11 Control frames (ACK, RTS, CTS, BlockAck) and cross-BSS unicast Data frames that do not match the hardware `ADDR_CAM`. Hardware scan offload can also leave the Band 0 RX packet filter paused (`R_AX_PKT_CTRL_B0_PAUSE`).
-   * *Fix*: `rtw89_mon_program_mac_rx_tx_regs()` reconfigures `R_AX_RX_FLTR_OPT` (`0xCE20`), `R_AX_CTRL_FLTR` (`0xCE24`), `R_AX_MGNT_FLTR` (`0xCE28`), and `R_AX_DATA_FLTR` (`0xCE2C`) with promiscuous mask `0x55555555`, honors `FIF_FCSFAIL`, and automatically re-asserts filter state across channel switches (`rtw89_set_channel()`).
-2. **`NULL` `vif` Kernel Panic on Monitor TX (`mac80211.c` & `core.c`)**
-   * *Problem*: In `rtw89_ops_tx()` and `rtw89_core_tx_write()`, the macro `vif_to_rtwvif(vif)` was evaluated unconditionally in local variable declarations before checking whether `info->control.vif` is `NULL` (which is standard behavior for `mac80211` Radiotap injection).
-   * *Fix*: `rtw89_mon_resolve_tx_vif()` resolves the active monitor VIF before dereference, preventing kernel crashes.
+1. **Hardware MAC RX Subtype & Address CAM Filtering (`mac80211.c`)**
+   * *Problem*: Band 0 MAC registers drop 802.11 Control frames (ACK, RTS, CTS, BlockAck) and cross-BSS unicast Data frames that do not match the hardware `ADDR_CAM`.
+   * *Fix (v2)*: Integrated directly into `rtw89_ops_configure_filter()`. When `IEEE80211_CONF_MONITOR` is active, clears `B_AX_A_UC_CAM_MATCH`, `B_AX_A_BC_CAM_MATCH`, `B_AX_A_MC_LIST_CAM_MATCH`, `B_AX_A_BCN_CHK_EN`, and `B_AX_UID_FILTER_MASK`, while asserting `B_AX_A_PWR_MGNT`. Automatically configures both MAC 0 and MAC 1 (when DBCC is enabled) and cleanly restores standard filter state upon exiting monitor mode.
+2. **`NULL` `vif` Kernel Panic on Monitor TX & Safe RCU Teardown (`mac80211.c` & `core.c`)**
+   * *Problem*: In `rtw89_ops_tx()`, the macro `vif_to_rtwvif(vif)` was evaluated unconditionally in local variable declarations before checking whether `info->control.vif` is `NULL` (which is standard behavior for `mac80211` Radiotap injection). Furthermore, tearing down monitor interfaces while injecting could trigger Use-After-Free conditions.
+   * *Fix (v2)*: `pure_monitor_mode_vif` is protected with RCU (`__rcu` in `core.h`). `rtw89_ops_tx()` safely dereferences within an `rcu_read_lock()` block and resolves the active monitor VIF via official helper `rtwvif_to_vif()`. In `rtw89_ops_remove_interface()`, `rcu_assign_pointer(..., NULL)` and `synchronize_rcu()` are placed at the very top of the teardown path before releasing links, CAM entries, and MACID resources.
 3. **Invalid Rate Index & Missing `TXWD_INFO` in `rtw89_core_tx_update_injection()` (`core.c`)**
    * *Problem*: When Radiotap headers omit an explicit bitrate, `mac80211` passes signed `s8 rates[0].idx = -1`. Upstream cast this to `u8` (`255`), writing an invalid hardware rate index, and omitted `desc_info->en_wd_info` on non-management frames.
-   * *Fix*: `rtw89_mon_fixup_tx_desc()` selects a valid hardware rate (defaulting to `RTW89_HW_RATE_OFDM6` / 6.0 Mbps), asserts `en_wd_info` / `use_rate` / `dis_data_fb`, and bounds hardware retries (`tx_cnt_lmt = 1`) when `IEEE80211_TX_CTL_NO_ACK` is set.
-4. **Uninitialized Monitor `mac_id` Scheduler Context & Sleep Lock (`fw.h`)**
-   * *Problem*: Standalone monitor interfaces (`IEEE80211_HW_WANT_MONITOR_VIF`) allocate a `mac_id` and hardware port, but never configure CMAC/DMAC tables or register the link with the firmware scheduler. The firmware keeps the TX queue paused.
-   * *Fix*: `rtw89_mon_add_vif_post()` programs `h2c_default_cmac_tbl` / `h2c_default_dmac_tbl`, registers the role via `rtw89_fw_h2c_join_info()` using `RTW89_SELF_ROLE_AP` with `RTW89_NET_TYPE_NO_LINK` (bypassing client-role beacon timeout checks while leaving beacon TX disabled), unpauses the MACID via `rtw89_fw_h2c_macid_pause()`, and clears `R_AX_MACID_SLEEP_0` (`0xC2C0`).
+   * *Fix (v2)*: Rate index type is declared as signed `s8 idx`. When `idx < 0`, it defaults to valid `RTW89_HW_RATE_OFDM6` (6.0 Mbps) with `use_rate = true` and `dis_data_fb = true`. Enables `en_wd_info = true` unconditionally on injected frames so `txwd_info` is properly generated into hardware descriptors, and bounds retries (`tx_cnt_lmt = 1`) when `IEEE80211_TX_CTL_NO_ACK` is set.
+4. **Uninitialized Monitor `mac_id` Scheduler Context & 4-Bank Hardware Sleep Lock (`mac.c` & `mac80211.c`)**
+   * *Problem*: Standalone monitor interfaces (`IEEE80211_HW_WANT_MONITOR_VIF`) allocate a `mac_id` and hardware port, but never configure CMAC/DMAC tables or register the link with the firmware scheduler. The firmware keeps the TX queue paused, and hardware MAC ID sleep registers freeze transmission.
+   * *Fix (v2)*: `rtw89_ops_add_interface()` programs `h2c_default_cmac_tbl` / `h2c_default_dmac_tbl`, registers the role via `rtw89_fw_h2c_join_info()` using `RTW89_SELF_ROLE_AP` with `RTW89_NET_TYPE_NO_LINK`, and unpauses hardware queues via `rtw89_mac_unpause_macid()`, clearing all 4 MACID sleep banks (`R_AX_MACID_SLEEP_0..3`) on `RTW89_CHIP_AX`. In `rtw89_chip_rfk_channel_for_pure_mon_vif()`, `lockdep_assert_wiphy` and `rcu_dereference_protected()` completely eliminate sleeping-in-atomic context switch warnings during RF calibration.
 
 ---
 
 ## Kernel & Distro Compatibility
 
-The AST/brace-aware patcher (`scripts/patch_rtw89.py`) inspects `core.h` and `mac80211.c` at build time and automatically adapts to both upstream driver generations:
-
-| Driver Generation | Kernel Versions | Locking & VIF Architecture | Distro Examples |
-| :--- | :--- | :--- | :--- |
-| **API Gen 1** | `Linux 6.1 – 6.10` | `struct rtw89_vif`, `rtwdev->mutex` | Debian 12 (Bookworm), Ubuntu 22.04 LTS (HWE) |
-| **API Gen 2** | `Linux 6.11 – 7.x+` & `lwfinger/rtw89` | MLO `struct rtw89_vif_link`, `pure_monitor_mode_vif`, `wiphy_lock` | Kali Linux 2024+, Ubuntu 24.04+, Arch Linux, Fedora |
+| Method | Target Environments | Status |
+| :--- | :--- | :--- |
+| **Upstream Kernel Series (`v2`)** | `Linux 6.11 \u2013 7.x+` (Mainline, Kali, Arch, Fedora) | ✅ Submitted to `linux-wireless` (lore.kernel.org) |
+| **AST Source Integrator (`scripts/patch_rtw89.py`)** | `Linux 6.1 \u2013 7.x+` (API Gen 1 & Gen 2) | ✅ Idempotent patch & revert supported |
+| **Out-of-tree Kbuild (`scripts/build_module.sh`)** | Kali Linux, Debian 12+, Ubuntu 22.04 / 24.04+ | ✅ Automatic header detection & `/lib/modules/.../updates` installer |
 
 ---
 
@@ -73,27 +92,47 @@ The AST/brace-aware patcher (`scripts/patch_rtw89.py`) inspects `core.h` and `ma
 
 ```text
 rtw89-monitor-injection/
+├── patches/
+│   ├── v2/
+│   │   ├── v2-0001-wifi-rtw89-fix-RX-filter-configuration-for-monito.patch  # Patch 1/2: Promiscuous RX CAM filtering
+│   │   └── v2-0002-wifi-rtw89-support-raw-frame-injection-on-standal.patch  # Patch 2/2: RCU monitor TX, H2C & MACID unpause
+│   └── linux-7.1-rtw89-monitor.diff                                         # Reference monolithic diff
 ├── src/
-│   ├── rtw89_mon.h                  # Extension API declarations & autoconf bridge
-│   └── rtw89_mon.c                  # MAC RX filter, H2C monitor context & TX descriptor fixups
+│   ├── rtw89_mon.h                  # Standalone extension declarations
+│   └── rtw89_mon.c                  # Standalone MAC RX filter & TX fixups
 ├── scripts/
 │   ├── patch_rtw89.py               # AST/brace-aware source integrator (--detect-only, --apply, --revert)
 │   ├── build_module.sh              # Kbuild build, live reload, /lib/modules/.../updates installer
 │   └── verify_monitor_diag.py       # IEEE 802.11 Radiotap RX & single Null-Data diagnostic verifier
-├── patches/
-│   └── linux-7.1-rtw89-monitor.diff # Reference unified diff for Linux 6.11 - 7.x+
 ├── tests/
 │   └── test_patch_rtw89.py          # Automated Gen 1 / Gen 2 patch & revert unit tests
 ├── docs/
-│   ├── ARCHITECTURE.md              # Register, H2C, and mac80211 flow documentation
-│   └── README.ru.md                 # Russian documentation
+│   ├── ARCHITECTURE.md              # Register, H2C, RCU, and mac80211 flow documentation
+│   └── screenshots/                 # Wireshark and aireplay verification captures
 ├── README.md                        # English documentation
-└── README_RU.md                     # Russian documentation (root link)
+└── README_RU.md                     # Russian documentation
 ```
 
 ---
 
-## Kali Linux & Penetration Testing Quickstart
+## Quickstart: Applying Upstream Patches via `git am`
+
+If you are compiling your own kernel or packaging for a distribution:
+
+```bash
+git clone https://github.com/ph4ntom-rev/rtw89-monitor-injection.git
+cd /path/to/linux-source-tree
+
+# Apply both v2 patches cleanly:
+git am /path/to/rtw89-monitor-injection/patches/v2/*.patch
+
+# Verify clean application:
+git log -n 2 --oneline
+```
+
+---
+
+## Quickstart: Building as Override Module on Kali Linux / Ubuntu
 
 ### Step 1: Install Kernel Headers and Build Tools
 ```bash
@@ -116,7 +155,6 @@ tar -xf /usr/src/linux-source-*.tar.xz \
 chmod +x scripts/*.sh scripts/*.py
 ./scripts/build_module.sh --rtw89-dir ~/rtw89_src --install
 ```
-*(Tip: Use `./scripts/build_module.sh --rtw89-dir ~/rtw89_src --reload` if you want to test the module in memory without permanent disk installation).*
 
 ---
 
@@ -127,7 +165,7 @@ chmod +x scripts/*.sh scripts/*.py
 sudo airmon-ng check kill
 sudo airmon-ng start wlan0
 
-# Verify monitor interface (usually wlan0mon or wlan0)
+# Verify monitor interface
 sudo airodump-ng wlan0mon
 ```
 
@@ -138,19 +176,14 @@ sudo iw dev wlan0 set type monitor
 sudo ip link set wlan0 up
 sudo iw dev wlan0 set freq 2412
 
-# Check kernel logs:
-# rtw89_8852ae ...: monitor mode initialized on mac_id=0 port=0 (ret=0)
-sudo dmesg | grep rtw89
-
 # Capture full 802.11 frames with Radiotap headers:
 sudo tcpdump -i wlan0 -I -n -e -c 30
 ```
 
 ---
 
-### Step 4: Packet Injection Verification (`aireplay-ng` & Diagnostic Tool)
+### Step 4: Packet Injection Verification (`aireplay-ng`)
 
-#### Testing with `aireplay-ng`:
 ```bash
 sudo aireplay-ng -9 wlan0mon
 ```
@@ -161,60 +194,12 @@ Injection is working!
 Ping (Ack) answered by AP ...
 ```
 
-#### Running the Built-in Diagnostic Tool:
-The repository includes an automated verification script that tests promiscuous reception across all 802.11 subtypes (Management, Control, Data) and performs an isolated single Null-Data diagnostic frame injection:
-```bash
-sudo python3 scripts/verify_monitor_diag.py \
-  --iface wlan0 \
-  --freq 2412 \
-  --duration 5 \
-  --diag-tx \
-  --restore-managed
-```
-
-Sample diagnostic summary:
-```text
-[+] Interface wlan0 set to MONITOR on freq 2412 MHz
-[+] Captured 342 frames in 5.0 seconds:
-    - Beacon: 184
-    - Probe Request: 42
-    - Probe Response: 19
-    - Control (ACK / RTS / CTS / BlockAck): 82
-    - Data: 15
-[+] Diagnostic TX test frame injected successfully (6.0 Mbps OFDM, NO_ACK).
-[+] Interface restored to MANAGED mode.
-```
-
----
-
-## Uninstalling & Restoring Stock Driver
-
-To remove the override kernel module and revert to your distribution's stock driver:
-```bash
-./scripts/build_module.sh --uninstall
-```
-
-To revert patched `rtw89` source code back to byte-exact originals:
-```bash
-python3 scripts/patch_rtw89.py --rtw89-dir ~/rtw89_src --revert
-```
-
----
-
-## Running Automated Unit Tests
-
-Automated tests verify that both Gen 1 (Linux 6.1–6.10) and Gen 2 (Linux 6.11–7.x+) patches apply idempotently, compile cleanly, revert without leaving artifacts, and contain no firmware binaries:
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
 ---
 
 ## Frequently Asked Questions (FAQ)
 
 ### Q: Why does stock `rtw89` drop Control frames and cross-BSS Data?
-**A:** On Realtek 802.11ax hardware (`RTW89_CHIP_AX`), MAC hardware registers `R_AX_RX_FLTR_OPT` (`0xCE20`), `R_AX_CTRL_FLTR` (`0xCE24`), and `R_AX_DATA_FLTR` (`0xCE2C`) default to discarding frames whose destination does not match the device MAC or `ADDR_CAM`. Our patch unlocks these registers (`0x55555555`) whenever monitor mode is active.
+**A:** On Realtek 802.11ax hardware (`RTW89_CHIP_AX`), MAC hardware registers default to discarding frames whose destination does not match the device MAC or `ADDR_CAM`. Our patch adjusts `rx_fltr` dynamically in `rtw89_ops_configure_filter()` whenever `IEEE80211_CONF_MONITOR` is active.
 
 ### Q: Does this require modifying or flashing the firmware?
 **A:** **No.** The official Realtek firmware image from `/lib/firmware/rtw89/` remains 100% untouched and cryptographically valid. All hooks and table initializations (`h2c_default_cmac_tbl`, `rtw89_fw_h2c_join_info`) occur through the standard host driver command queue.

@@ -1,0 +1,65 @@
+From: Enver <owner@ph4ntom-rev.uz>
+Subject: [PATCH v3 3/3] wifi: rtw89: restore channel after monitor interface restart
+
+After the last monitor interface is removed, the hardware is stopped.
+When monitor_chanreq remains unchanged across the next stop/start cycle,
+mac80211 does not issue IEEE80211_CONF_CHANGE_CHANNEL, so
+rtw89_set_channel() is not called. Hardware initialization completes, but
+monitor-specific channel and RF calibration state is not restored,
+leaving monitor RX and injection unusable.
+
+Restore the channel after successful monitor VIF creation, once
+pure_monitor_mode_vif has been published, so RF calibration sees the
+monitor role. If channel restoration fails, disconnect the firmware role,
+clear the pointer and synchronize RCU before unwinding the link. Preserve
+the original error while logging any disconnect failure separately.
+
+Tested on RTL8852AE with 25 monitor delete/recreate cycles, both with and
+without concurrent raw injection. Post-stress RX and injection succeed,
+with no new kernel alerts. A forced -EINVAL test verified the rollback
+sequence and disconnect before link cleanup.
+
+Fixes: d9204e99b696 ("wifi: rtw89: do RF calibration once setting channel when running pure monitor mode")
+Signed-off-by: Enver <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index 5404e03..caaf817 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -189,7 +189,7 @@ static int rtw89_ops_add_interface(struct ieee80211_hw *hw,
+ 	struct rtw89_vif *rtwvif = vif_to_rtwvif(vif);
+ 	struct rtw89_vif_link *rtwvif_link;
+ 	u8 mac_id, port;
+-	int ret = 0;
++	int ret = 0, disconnect_ret;
+ 
+ 	lockdep_assert_wiphy(hw->wiphy);
+ 
+@@ -245,6 +245,9 @@ static int rtw89_ops_add_interface(struct ieee80211_hw *hw,
+ 		if (ret)
+ 			goto remove_link;
+ 		rcu_assign_pointer(rtwdev->pure_monitor_mode_vif, rtwvif);
++		ret = rtw89_set_channel(rtwdev);
++		if (ret)
++			goto remove_monitor;
+ 	} else if (rcu_access_pointer(rtwdev->pure_monitor_mode_vif)) {
+ 		rcu_assign_pointer(rtwdev->pure_monitor_mode_vif, NULL);
+ 		synchronize_rcu();
+@@ -252,6 +255,14 @@ static int rtw89_ops_add_interface(struct ieee80211_hw *hw,
+ 	rtw89_recalc_lps(rtwdev);
+ 	return 0;
+ 
++remove_monitor:
++	rcu_assign_pointer(rtwdev->pure_monitor_mode_vif, NULL);
++	synchronize_rcu();
++	disconnect_ret = rtw89_fw_h2c_join_info(rtwdev, rtwvif_link, NULL, true);
++	if (disconnect_ret)
++		rtw89_warn(rtwdev,
++			   "failed to disconnect monitor vif during rollback: %d\n",
++			   disconnect_ret);
+ remove_link:
+ 	__rtw89_ops_remove_iface_link(rtwdev, rtwvif_link);
+ unset_link:

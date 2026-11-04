@@ -26,6 +26,9 @@
 > git am patches/v2/v2-0002-wifi-rtw89-support-raw-frame-injection-on-standal.patch
 > ```
 
+> ### v3 monitor-mode series
+> `patches/v3/` adds the updated RX filter and raw-injection series, plus channel restoration and rollback handling for monitor interface recreation. The series was submitted to `linux-wireless` on 2026-11-05; maintainer review is pending. See the [preflight validation summary](docs/PREFLIGHT_VALIDATION.md) and the [raw-socket reproducer](scripts/verify_hardware.py).
+
 ---
 
 Host-side Linux `mac80211` driver extension and bugfix patchset for the mainline **`rtw89`** wireless driver (**Realtek RTL8852AE** PCIe `[10ec:8852]`, with architectural compatibility for **RTL8852BE** and **RTL8852CE**).

@@ -1,0 +1,212 @@
+From ac0d279a09b801a6cc6cf4854a8b73a856ae1053 Mon Sep 17 00:00:00 2001
+From: ph4ntom-rev <owner@ph4ntom-rev.uz>
+Date: Wed, 4 Nov 2026 15:06:32 +0500
+Subject: [PATCH v3 2/3] wifi: rtw89: support raw frame injection on standalone
+ monitor interface
+
+Radiotap injection on a standalone monitor interface can pass
+a NULL info->control.vif. Resolve the monitor VIF under RCU
+instead of dereferencing the NULL pointer, and synchronize with
+interface teardown.
+
+Configure the monitor link role, mark it connected to the
+firmware scheduler and disconnect it during removal. Check the
+firmware command result when adding an interface and roll back
+the link on failure.
+
+Handle an unspecified injected rate by selecting OFDM 6 Mbps
+and limiting retries for NO_ACK frames. Protect monitor VIF
+accesses during RF calibration with RCU and the wiphy lock.
+
+Signed-off-by: ph4ntom-rev <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/core.c     | 24 ++++++++--
+ drivers/net/wireless/realtek/rtw89/core.h     |  2 +-
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 45 ++++++++++++++++---
+ 3 files changed, 62 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
+index 58ee5efc3..55e626438 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.c
++++ b/drivers/net/wireless/realtek/rtw89/core.c
+@@ -530,7 +530,7 @@ void rtw89_chip_rfk_channel(struct rtw89_dev *rtwdev,
+ 			    struct rtw89_vif_link *rtwvif_link)
+ {
+ 	const struct rtw89_chip_info *chip = rtwdev->chip;
+-	bool mon = !!rtwdev->pure_monitor_mode_vif;
++	bool mon = !!rcu_access_pointer(rtwdev->pure_monitor_mode_vif);
+ 	bool prehdl_link = false;
+ 
+ 	if (chip->chip_gen != RTW89_CHIP_AX &&
+@@ -560,9 +560,13 @@ void rtw89_chip_rfk_channel(struct rtw89_dev *rtwdev,
+ static void rtw89_chip_rfk_channel_for_pure_mon_vif(struct rtw89_dev *rtwdev,
+ 						    enum rtw89_phy_idx phy_idx)
+ {
+-	struct rtw89_vif *rtwvif = rtwdev->pure_monitor_mode_vif;
++	struct rtw89_vif *rtwvif;
+ 	struct rtw89_vif_link *rtwvif_link;
+ 
++	lockdep_assert_wiphy(rtwdev->hw->wiphy);
++
++	rtwvif = rcu_dereference_protected(rtwdev->pure_monitor_mode_vif,
++					   lockdep_is_held(&rtwdev->hw->wiphy->mtx));
+ 	if (!rtwvif)
+ 		return;
+ 
+@@ -1239,9 +1243,21 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
+ 	enum mac80211_rate_control_flags flags = info->control.rates[0].flags;
+ 	struct rtw89_tx_desc_info *desc_info = &tx_req->desc_info;
+ 	const struct rtw89_chan *chan;
+-	u8 idx = info->control.rates[0].idx;
++	s8 idx = info->control.rates[0].idx;
+ 	u8 nss, mcs;
+ 
++	if (info->flags & IEEE80211_TX_CTL_NO_ACK) {
++		desc_info->tx_cnt_lmt_en = true;
++		desc_info->tx_cnt_lmt = 1;
++	}
++
++	if (idx < 0) {
++		desc_info->data_rate = RTW89_HW_RATE_OFDM6;
++		desc_info->use_rate = true;
++		desc_info->dis_data_fb = true;
++		return;
++	}
++
+ 	desc_info->use_rate = true;
+ 	desc_info->dis_data_fb = true;
+ 
+@@ -5726,6 +5742,8 @@ void rtw89_vif_type_mapping(struct rtw89_vif_link *rtwvif_link, bool assoc)
+ 		rtwvif_link->self_role = RTW89_SELF_ROLE_CLIENT;
+ 		break;
+ 	case NL80211_IFTYPE_MONITOR:
++		rtwvif_link->net_type = RTW89_NET_TYPE_NO_LINK;
++		rtwvif_link->self_role = RTW89_SELF_ROLE_AP;
+ 		break;
+ 	default:
+ 		WARN_ON(1);
+diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
+index 0d893b992..d7f30394c 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.h
++++ b/drivers/net/wireless/realtek/rtw89/core.h
+@@ -7813,7 +7813,7 @@ struct rtw89_dev {
+ 	int napi_budget_countdown;
+ 
+ 	struct rtw89_debugfs *debugfs;
+-	struct rtw89_vif *pure_monitor_mode_vif;
++	struct rtw89_vif __rcu *pure_monitor_mode_vif;
+ 	struct rtw89_led led;
+ 
+ 	/* HCI related data, keep last */
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index bb6101ccb..5404e031e 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -23,16 +23,30 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
+ 	struct rtw89_dev *rtwdev = hw->priv;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	struct ieee80211_vif *vif = info->control.vif;
+-	struct rtw89_vif *rtwvif = vif_to_rtwvif(vif);
++	struct rtw89_vif *rtwvif;
+ 	struct ieee80211_sta *sta = control->sta;
+ 	u32 flags = IEEE80211_SKB_CB(skb)->flags;
+ 	int ret, qsel;
+ 
++	rcu_read_lock();
++	if (!vif) {
++		rtwvif = rcu_dereference(rtwdev->pure_monitor_mode_vif);
++		if (!rtwvif) {
++			rcu_read_unlock();
++			ieee80211_free_txskb(hw, skb);
++			return;
++		}
++		vif = rtwvif_to_vif(rtwvif);
++	} else {
++		rtwvif = vif_to_rtwvif(vif);
++	}
++
+ 	if (rtwvif->offchan && !(flags & IEEE80211_TX_CTL_TX_OFFCHAN) && sta) {
+ 		struct rtw89_sta *rtwsta = sta_to_rtwsta(sta);
+ 
+ 		rtw89_debug(rtwdev, RTW89_DBG_TXRX, "ops_tx during offchan\n");
+ 		skb_queue_tail(&rtwsta->roc_queue, skb);
++		rcu_read_unlock();
+ 		return;
+ 	}
+ 
+@@ -40,9 +54,11 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
+ 	if (ret) {
+ 		rtw89_err(rtwdev, "failed to transmit skb: %d\n", ret);
+ 		ieee80211_free_txskb(hw, skb);
++		rcu_read_unlock();
+ 		return;
+ 	}
+ 	rtw89_core_tx_kick_off(rtwdev, qsel);
++	rcu_read_unlock();
+ }
+ 
+ static void rtw89_ops_wake_tx_queue(struct ieee80211_hw *hw,
+@@ -224,11 +240,20 @@ static int rtw89_ops_add_interface(struct ieee80211_hw *hw,
+ 	if (ret)
+ 		goto unset_link;
+ 
+-	rtwdev->pure_monitor_mode_vif = vif->type == NL80211_IFTYPE_MONITOR ?
+-					rtwvif : NULL;
++	if (vif->type == NL80211_IFTYPE_MONITOR) {
++		ret = rtw89_fw_h2c_join_info(rtwdev, rtwvif_link, NULL, false);
++		if (ret)
++			goto remove_link;
++		rcu_assign_pointer(rtwdev->pure_monitor_mode_vif, rtwvif);
++	} else if (rcu_access_pointer(rtwdev->pure_monitor_mode_vif)) {
++		rcu_assign_pointer(rtwdev->pure_monitor_mode_vif, NULL);
++		synchronize_rcu();
++	}
+ 	rtw89_recalc_lps(rtwdev);
+ 	return 0;
+ 
++remove_link:
++	__rtw89_ops_remove_iface_link(rtwdev, rtwvif_link);
+ unset_link:
+ 	rtw89_vif_unset_link(rtwvif, RTW89_VIF_IDLE_LINK_ID);
+ release_port:
+@@ -248,9 +273,15 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+ 	u8 macid = rtw89_vif_get_main_macid(rtwvif);
+ 	u8 port = rtw89_vif_get_main_port(rtwvif);
+ 	struct rtw89_vif_link *rtwvif_link;
++	int ret;
+ 
+ 	lockdep_assert_wiphy(hw->wiphy);
+ 
++	if (vif->type == NL80211_IFTYPE_MONITOR) {
++		rcu_assign_pointer(rtwdev->pure_monitor_mode_vif, NULL);
++		synchronize_rcu();
++	}
++
+ 	rtw89_debug(rtwdev, RTW89_DBG_STATE, "remove vif %pM type %d p2p %d\n",
+ 		    vif->addr, vif->type, vif->p2p);
+ 
+@@ -264,6 +295,12 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+ 		goto bottom;
+ 	}
+ 
++	if (vif->type == NL80211_IFTYPE_MONITOR) {
++		ret = rtw89_fw_h2c_join_info(rtwdev, rtwvif_link, NULL, true);
++		if (ret)
++			rtw89_warn(rtwdev, "failed to disconnect monitor vif: %d\n", ret);
++	}
++
+ 	__rtw89_ops_remove_iface_link(rtwdev, rtwvif_link);
+ 
+ 	rtw89_vif_unset_link(rtwvif, RTW89_VIF_IDLE_LINK_ID);
+@@ -273,8 +310,6 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+ 	rtw89_core_release_bit_map(rtwdev->hw_port, port);
+ 	rtw89_release_mac_id(rtwdev, macid);
+ 
+-	rtwdev->pure_monitor_mode_vif = NULL;
+-
+ 	rtw89_recalc_lps(rtwdev);
+ 	rtw89_enter_ips_by_hwflags(rtwdev);
+ }
+-- 
+2.56.0.windows.4
+

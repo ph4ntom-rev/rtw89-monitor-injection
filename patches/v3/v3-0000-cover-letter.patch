@@ -1,0 +1,58 @@
+From: Enver <owner@ph4ntom-rev.uz>
+Subject: [PATCH v3 0/3] wifi: rtw89: monitor RX filtering, raw injection and channel restore
+
+This series supersedes the v2 monitor-mode series:
+https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/
+https://lore.kernel.org/linux-wireless/179371849554.20972.4737532522625772373@ph4ntom-rev.uz/
+
+Changes in v3:
+- remove redundant RX filter, sleep-register and scheduler operations;
+- add rollback and error reporting for monitor firmware join state;
+- restore channel and RF calibration after monitor interface recreation;
+- disconnect the firmware role if channel restoration fails, while
+  preserving the original error and protecting VIF teardown with RCU.
+
+The post-stress RX failure was traced to missing channel restoration
+after stop/start. When monitor_chanreq is unchanged, mac80211 does not
+issue a channel-change callback, so rtw89_set_channel() is not called.
+Forcing a different channel and then restoring it confirms that RX
+recovers without reloading the driver.
+
+Patch 3/3 identifies the commit that introduced monitor-specific RF
+calibration and completes its restart lifecycle.
+
+Validation on RTL8852AE, Linux 7.1.5+kali-amd64:
+- 25 monitor recreate cycles with raw TX: 16,670 post-stress frames,
+  225 beacons and 30/30 injection responses from one AP;
+- 25 recreate cycles without raw TX: 20,517 post-stress frames;
+- no new kernel alerts in the normal stress runs;
+- managed scanning and association work;
+- forced -EINVAL rollback testing verifies join_info(true) before
+  link cleanup and returns the original error to mac80211;
+- sequential application of all three patches succeeds;
+- full Linux 7.3.0 build, W=1, sparse and checkpatch pass.
+
+Both APs responded at baseline. In the final post-stress injection run,
+one AP answered 30/30 probes; the other AP is not listed as answering
+in the parsed report, so this is not claimed as a 30/30 result from
+both APs.
+
+Earlier review requested the default R_AX_CTRL_FLTR value and a real
+raw-socket reproducer. The measured default value is 0x55555555.
+The actual reproducer is scripts/verify_hardware.py, including raw
+AF_PACKET injection, monitor recreation and PCAP/dmesg collection.
+The NULL-VIF path is reached through ieee80211_xmit(sdata, NULL, skb);
+it is not asserted that every injection supplies a NULL VIF.
+RCU publication, reader locking, clearing and synchronize_rcu() are
+used to protect monitor VIF lifetime during TX and teardown.
+
+Only RTL8852AE has been tested. Other rtw89 chips, DBCC/MAC 1
+configurations, long-term operation and historical runtime of the
+Fixes commit have not been verified. No claim is made for successful
+over-air injection of every control-frame subtype.
+
+Development and validation assistance: Kimi Code (Moonshot AI).
+The assistant helped analyze the failure, inspect firmware, draft the
+patch and run the validation. The submitter reviewed the final changes
+and takes responsibility for the submission.
+---

@@ -1,0 +1,42 @@
+From a0c46bd87918c72638f816a410161a158e4b2dcb Mon Sep 17 00:00:00 2001
+From: ph4ntom-rev <owner@ph4ntom-rev.uz>
+Date: Wed, 4 Nov 2026 15:06:31 +0500
+Subject: [PATCH v3 1/3] wifi: rtw89: fix RX filter configuration for monitor
+ mode
+
+Monitor mode enables sniffer mode but retains address CAM and
+beacon checks in the RX filter. On RTL8852AE this suppresses
+frames from other BSSIDs.
+
+Clear the unicast/broadcast CAM match, beacon check and UID
+filter bits in the local filter value while monitor mode is
+active. Keep hal.rx_fltr unchanged so the normal filter is
+restored when monitor mode ends. The adjusted value is written
+through the existing MAC 0 and MAC 1 paths.
+
+Signed-off-by: ph4ntom-rev <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index 9e6cafc49..bb6101ccb 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -377,6 +377,13 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
+ 		rx_fltr &= ~B_AX_A_A1_MATCH;
+ 	}
+ 
++	if (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR) {
++		rx_fltr &= ~(B_AX_A_UC_CAM_MATCH |
++			     B_AX_A_BC_CAM_MATCH |
++			     B_AX_A_BCN_CHK_EN |
++			     B_AX_UID_FILTER_MASK);
++	}
++
+ 	rtw89_mac_set_rx_fltr(rtwdev, RTW89_MAC_0, rx_fltr);
+ 	if (!rtwdev->dbcc_en)
+ 		return;
+-- 
+2.56.0.windows.4
+

@@ -1,8 +1,8 @@
 # Realtek RTL8852AE / rtw89 — Патч режима мониторинга (Monitor Mode) и инъекции пакетов (Packet Injection)
 
-[![Linux Kernel Upstream: Submitted (v2)](https://img.shields.io/badge/Linux%20Kernel%20Upstream-v2%20Submitted-blue.svg)](https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/)
-[![Lore Archive: linux-wireless](https://img.shields.io/badge/lore.kernel.org-linux--wireless-success.svg)](https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/)
-[![checkpatch.pl: strict 0/0/0](https://img.shields.io/badge/checkpatch.pl--strict-0%20errors%20%7C%200%20warnings-brightgreen.svg)](patches/v2/)
+[![Release v3.0.0](https://img.shields.io/badge/Release-v3.0.0-blue.svg)](https://github.com/ph4ntom-rev/rtw89-monitor-injection/releases/tag/v3.0.0)
+[![Linux Kernel Upstream: Submitted (v3)](https://img.shields.io/badge/Linux%20Kernel%20Upstream-v3%20Submitted-blue.svg)](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/)
+[![checkpatch.pl: strict 0/0/0](https://img.shields.io/badge/checkpatch.pl--strict-0%20errors%20%7C%200%20warnings-brightgreen.svg)](patches/v3/)
 [![License: GPL-2.0 OR BSD-3-Clause](https://img.shields.io/badge/License-GPL--2.0%20OR%20BSD--3--Clause-blue.svg)](LICENSE)
 [![Linux Kernel](https://img.shields.io/badge/Linux-6.1%20--%207.x%2B-success.svg)](docs/ARCHITECTURE.md)
 [![Kali Linux](https://img.shields.io/badge/Kali%20Linux-Проверено-darkviolet.svg)](README_RU.md#быстрый-старт-в-kali-linux--ubuntu--debian)
@@ -12,34 +12,53 @@
 **[English](README.md) | [Русская документация](README_RU.md) | [Техническая архитектура (EN)](docs/ARCHITECTURE.md)**
 
 > [!IMPORTANT]
-> ### 🚀 Официальная серия патчей ядра Linux (Серия v2)
-> Данная серия патчей прошла строжайший аудит утилитой `checkpatch.pl --strict` (**0 errors, 0 warnings, 0 checks**) и официально отправлена в рассылку ядра **Linux Wireless Mailing List (`linux-wireless@vger.kernel.org`)** и мейнтейнерам подсистемы:
-> * **Патч 1/2**: `[PATCH v2 1/2] wifi: rtw89: fix RX filter configuration for monitor mode`  
->   🔗 [Архив ядра lore.kernel.org (Message-ID: `<179371849554.20972.16232816164394690660@ph4ntom-rev.uz>`)](https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/)
-> * **Патч 2/2**: `[PATCH v2 2/2] wifi: rtw89: support raw frame injection on standalone monitor interface`  
->   🔗 [Архив ядра lore.kernel.org (Message-ID: `<179371849554.20972.4737532522625772373@ph4ntom-rev.uz>`)](https://lore.kernel.org/linux-wireless/179371849554.20972.4737532522625772373@ph4ntom-rev.uz/)
+> ### v3.0.0 — мониторинг, инъекция и восстановление канала
+> Актуальный релиз: [`v3.0.0`](https://github.com/ph4ntom-rev/rtw89-monitor-injection/releases/tag/v3.0.0). Серия из трёх патчей отправлена в `linux-wireless` 5 ноября 2026 года и опубликована в Lore как `#290240–#290243`. Ревью мейнтейнеров ещё идёт: отправка не означает принятие в upstream.
 >
-> **Быстрое применение патчей через Git (`git am`)**:
+> * **Патч 1/3**: фильтрация RX в monitor mode — [Lore](https://lore.kernel.org/linux-wireless/20261104203051.564-2-owner@ph4ntom-rev.uz/)
+> * **Патч 2/3**: raw injection, обработка NULL-VIF и RCU-защита teardown — [Lore](https://lore.kernel.org/linux-wireless/20261104203051.564-3-owner@ph4ntom-rev.uz/)
+> * **Патч 3/3**: восстановление канала и откат firmware role при ошибке — [Lore](https://lore.kernel.org/linux-wireless/20261104203051.564-4-owner@ph4ntom-rev.uz/)
+> * [Сопроводительное письмо](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/)
+>
+> **Отличия от v2:** удалены избыточные операции с фильтрами, sleep-регистрами и планировщиком; добавлены rollback ошибок firmware join, восстановление канала после recreate и отключение firmware role при неудачной настройке канала с сохранением исходной ошибки.
+>
+> **Применение серии:**
 > ```bash
-> # Применение официальных апстрим-патчей напрямую к дереву ядра Linux:
-> git am patches/v2/v2-0001-wifi-rtw89-fix-RX-filter-configuration-for-monito.patch
-> git am patches/v2/v2-0002-wifi-rtw89-support-raw-frame-injection-on-standal.patch
+> git am patches/v3/v3-0001-wifi-rtw89-fix-RX-filter-configuration-for-monito.patch
+> git am patches/v3/v3-0002-wifi-rtw89-support-raw-frame-injection-on-standal.patch
+> git am patches/v3/v3-0003-wifi-rtw89-restore-channel-after-monitor-restart.patch
 > ```
+> Файл `v3-0000` — это сопроводительное письмо, его применять через `git am` не нужно.
+>
+> [Результаты проверки](docs/PREFLIGHT_VALIDATION.md) · [Реальный reproducer через AF_PACKET](scripts/verify_hardware.py). Третий патч подписан `Enver <owner@ph4ntom-rev.uz>` и содержит `Fixes: d9204e99b696`.
 
 ---
 
-Патчсет и модуль расширения для штатного открытого драйвера ядра Linux **`rtw89`** (**Realtek RTL8852AE** PCIe `[10ec:8852]`, а также совместимых чипсетов **RTL8852BE** и **RTL8852CE**).
+Патчсет и модуль расширения для штатного открытого драйвера ядра Linux **`rtw89`**. **Проверка выполнена на Realtek RTL8852AE `[10ec:8852]`; другие чипы и конфигурации DBCC/MAC 1 не проверялись.**
 
-Обеспечивает полноценную поддержку режима монитора `mac80211` (**`NL80211_IFTYPE_MONITOR`**) с захватом кадров с метаданными Radiotap для **Wireshark** / **`tcpdump`**, работу утилит **`airmon-ng`** / **`airodump-ng`**, а также отправку сырых кадров и инъекцию пакетов (**`IEEE80211_TX_CTL_INJECTED`** / **`aireplay-ng`**).
+Поддерживается захват кадров `mac80211` (**`NL80211_IFTYPE_MONITOR`**) с метаданными Radiotap для **Wireshark** / **`tcpdump`**, работа утилит **`airmon-ng`** / **`airodump-ng`**, а также отправка сырых кадров и инъекция пакетов (**`IEEE80211_TX_CTL_INJECTED`** / **`aireplay-ng`**).
 
-Работает **на 100% на стороне драйвера ОС Linux** со штатной неизменённой подписанной прошивкой из пакета `linux-firmware`. **Модификация бинарных файлов прошивки не требуется.**
+Используется штатная неизменённая прошивка из пакета `linux-firmware`. **Модификация бинарных файлов прошивки не требуется.**
 
 ---
 
-## Наглядные доказательства работоспособности (Верификация в Kali Linux)
+## Проверка на RTL8852AE (Kali Linux 7.1.5)
 
 > [!TIP]
-> **100% работоспособность подтверждена**: На приведённых ниже реальных скриншотах продемонстрирована работа пропатченного драйвера в **Kali Linux (ядро 7.1.5+kali-amd64)** на реальном адаптере **Realtek RTL8852AE PCIe (`[10ec:8852]`)**.
+> Актуальная серия v3 прошла аппаратную и статическую проверку на **Realtek RTL8852AE (`[10ec:8852]`)**.
+>
+> | Проверка | Результат |
+> | --- | --- |
+> | 25 циклов recreate с raw TX | 16 670 кадров после stress, 225 beacon, новых ошибок ядра нет |
+> | 25 циклов recreate без raw TX | 20 517 кадров после stress |
+> | Инъекция после stress | 30/30 ответов от одной AP |
+> | Rollback с принудительным `-EINVAL` | `join_info(true)` перед очисткой link, исходная ошибка сохранена |
+> | Последовательное применение трёх патчей | Успешно; нормализованный код совпадает с собранным |
+> | Полная сборка Linux 7.3.0, `W=1`, `sparse`, `checkpatch --strict` | Успешно |
+>
+> Обе AP отвечали до stress. В последнем post-stress прогоне одна AP ответила 30/30, другая не указана в распознанном отчёте как ответившая. Это не результат 30/30 от обеих AP после stress.
+>
+> Проверялся только RTL8852AE. Другие чипы, длительная работа, исторический runtime коммита Fixes и инъекция всех подтипов control-кадров не проверялись.
 
 ### 1. Захват пакетов IEEE 802.11 Radiotap в Wireshark
 Перехват реального радиоэфира в режиме монитора: приём управляющих кадров Management (Beacon, Probe), кадров управления Control (ACK, Block Ack, RTS, CTS) и Data-кадров со всеми метаданными Radiotap (частота 2462 МГц / 11 канал, уровень сигнала по антеннам: `-18 dBm` / `-24 dBm`):
@@ -60,7 +79,7 @@
 * *«airodump-ng не видит пакеты или зависает»*
 * *«При попытке отправки кадров падает ядро (kernel NULL pointer dereference)»*
 
-В результате реверс-инжиниринга регистров и протокола общения хоста с микрокодом прошивки были выявлены и устранены **четыре ключевые причины**:
+В результате реверс-инжиниринга регистров и протокола общения хоста с микрокодом прошивки были устранены **четыре ключевые причины** и отдельный дефект восстановления после stop/start:
 
 1. **Аппаратная фильтрация кадров MAC RX и Address CAM (`mac80211.c`)**
    * *Проблема*: Регистры Band 0 MAC по умолчанию сбрасывают кадры Control (ACK, RTS, CTS, BlockAck) и чужие Data-кадры, не совпавшие с `ADDR_CAM`.
@@ -74,23 +93,29 @@
 4. **Неинициализированный контекст планировщика `mac_id` и 4 банка регистров сна (`mac.c`, `mac80211.c`)**
    * *Проблема*: Выделенный для монитора `mac_id` оставался на паузе в планировщике прошивки, а регистры сна MACID блокировали передачу.
    * *Решение (v2)*: `rtw89_ops_add_interface()` инициализирует таблицы `h2c_default_cmac_tbl` / `h2c_default_dmac_tbl`, регистрирует контекст через `rtw89_fw_h2c_join_info()` с ролью `RTW89_SELF_ROLE_AP` и типом `RTW89_NET_TYPE_NO_LINK`, а функция `rtw89_mac_unpause_macid()` снимает паузу с очередей прошивки и очищает все 4 банка регистров сна `R_AX_MACID_SLEEP_0..3`. В `rtw89_chip_rfk_channel_for_pure_mon_vif()` макросы `lockdep_assert_wiphy` и `rcu_dereference_protected` исключают предупреждения переключения контекста во время калибровки радиочастот.
+5. **Потеря канала после stop/start и неполный rollback (`mac80211.c`, v3)**
+   * *Проблема*: После удаления последнего monitor VIF железо останавливается. Если `monitor_chanreq` не изменился, mac80211 не сообщает о смене канала, поэтому `rtw89_set_channel()` не вызывается и monitor RX/инъекция прекращаются. Ошибка восстановления канала также могла оставить firmware role подключённой.
+   * *Решение (v3)*: После успешного создания monitor VIF и публикации `pure_monitor_mode_vif` вызывается `rtw89_set_channel()`. При ошибке выполняется `join_info(true)`, указатель очищается, выполняется `synchronize_rcu()`, а исходная ошибка сохраняется. См. `Fixes: d9204e99b696` в `patches/v3/v3-0003-wifi-rtw89-restore-channel-after-monitor-restart.patch`.
 
 ---
 
 ## Быстрый старт: Применение патчей апстрима через `git am`
 
-Для сборки собственного ядра или интеграции в пакеты дистрибутивов:
+Для сборки собственного ядра или интеграции в пакеты дистрибутивов используйте три патча v3. Файл `v3-0000` является сопроводительным письмом и применять его через `git am` не нужно.
 
 ```bash
 git clone https://github.com/ph4ntom-rev/rtw89-monitor-injection.git
 cd /path/to/linux-source-tree
 
-# Применить оба патча v2:
-git am /path/to/rtw89-monitor-injection/patches/v2/*.patch
+git am /path/to/rtw89-monitor-injection/patches/v3/v3-0001-wifi-rtw89-fix-RX-filter-configuration-for-monito.patch
+git am /path/to/rtw89-monitor-injection/patches/v3/v3-0002-wifi-rtw89-support-raw-frame-injection-on-standal.patch
+git am /path/to/rtw89-monitor-injection/patches/v3/v3-0003-wifi-rtw89-restore-channel-after-monitor-restart.patch
 
 # Проверить коммиты в дереве:
-git log -n 2 --oneline
+git log -n 3 --oneline
 ```
+
+Дополнительные материалы: [результаты проверки](docs/PREFLIGHT_VALIDATION.md) и [реальный reproducer](scripts/verify_hardware.py). Патчи v2 оставлены в `patches/v2/` для истории.
 
 ---
 

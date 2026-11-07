@@ -1,0 +1,72 @@
+From 9b01ddddf5b47ca25efad1ef9aeb5cec793195b6 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Sat, 7 Nov 2026 19:50:18 +0500
+Subject: [PATCH v4 1/4] wifi: rtw89: fix RX filter configuration for monitor
+ mode
+
+When entering monitor mode, rtw89_ops_configure_filter() enables
+B_AX_SNIFFER_MODE in hal.rx_fltr, but leaves hardware multicast,
+address CAM matching, beacon checking, and UID drop masks active
+unless specific FIF_* flags happen to toggle:
+
+- B_AX_A_UC_CAM_MATCH and B_AX_A_BC_CAM_MATCH are only cleared when
+  FIF_PROBE_REQ changes, causing unicast and broadcast frames from
+  arbitrary BSSs without a CAM entry to be dropped in hardware.
+- B_AX_A_MC is only cleared when FIF_ALLMULTI (IFF_PROMISC) is set,
+  and B_AX_A_MC_LIST_CAM_MATCH is never cleared, dropping multicast
+  frames when a monitor socket is opened without IFF_PROMISC.
+- B_AX_UID_FILTER_MASK is initialized to 3 in DEFAULT_AX_RX_FLTR
+  (and 15 in DEFAULT_BE_RX_FLTR) via mac->default_rx_fltr and is
+  never cleared by any FIF_* flag.
+- B_AX_A_BCN_CHK_EN should be unconditionally bypassed while
+  monitoring, matching the existing HW scan override.
+- FIF_CONTROL and FIF_PSPOLL are masked out of *new_flags even
+  though rx_fltr_init_ax()/rx_fltr_init_be() forward control frames
+  to the host via R_AX_CTRL_FLTR / R_BE_CTRL_FLTR.
+
+Retain FIF_CONTROL and FIF_PSPOLL in *new_flags, and clear
+B_AX_A_MC, B_AX_A_UC_CAM_MATCH, B_AX_A_BC_CAM_MATCH,
+B_AX_A_MC_LIST_CAM_MATCH, B_AX_A_BCN_CHK_EN, and
+B_AX_UID_FILTER_MASK in the local rx_fltr variable when
+IEEE80211_CONF_MONITOR is active. Applying the mask to the local
+rx_fltr preserves the baseline rtwdev->hal.rx_fltr state across
+mode transitions, and the bit positions match both R_AX_RX_FLTR_OPT
+and R_BE_RX_FLTR_OPT.
+
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index 9e6cafc..4cb63bd 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -318,7 +318,8 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
+ 	rtw89_leave_ps_mode(rtwdev);
+ 
+ 	*new_flags &= FIF_ALLMULTI | FIF_OTHER_BSS | FIF_FCSFAIL |
+-		      FIF_BCN_PRBRESP_PROMISC | FIF_PROBE_REQ;
++		      FIF_BCN_PRBRESP_PROMISC | FIF_PROBE_REQ |
++		      FIF_CONTROL | FIF_PSPOLL;
+ 
+ 	if (changed_flags & FIF_ALLMULTI) {
+ 		if (*new_flags & FIF_ALLMULTI)
+@@ -366,6 +367,14 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
+ 
+ 	rx_fltr = rtwdev->hal.rx_fltr;
+ 
++	if (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR)
++		rx_fltr &= ~(B_AX_A_MC |
++			     B_AX_A_UC_CAM_MATCH |
++			     B_AX_A_BC_CAM_MATCH |
++			     B_AX_A_MC_LIST_CAM_MATCH |
++			     B_AX_A_BCN_CHK_EN |
++			     B_AX_UID_FILTER_MASK);
++
+ 	/* mac80211 doesn't configure filter when HW scan, driver need to
+ 	 * set by itself. However, during P2P scan might have configure
+ 	 * filter to overwrite filter that HW scan needed, so we need to
+-- 
+2.56.0.windows.4
+

@@ -1,92 +1,42 @@
-# rtw89-8852ae-monitor (Русская документация)
+# Realtek RTL8852AE / rtw89 — Документация на русском языке (`PATCH v4`)
 
-**[English README](../README.md) | [Русская версия в корне](../README_RU.md) | [Техническая архитектура (EN)](ARCHITECTURE.md)**
+**[English README](../README.md) | [Русская версия в корне](../README_RU.md) | [Техническая архитектура (EN)](ARCHITECTURE.md) | [Отчёт о валидации (EN)](PREFLIGHT_VALIDATION.md)**
 
-Расширение и набор исправлений для штатного открытого драйвера Linux **`rtw89`** (`RTW89_CHIP_AX` / **Realtek RTL8852AE** PCIe `[10ec:8852]`), обеспечивающее полноценную поддержку режима мониторинга `mac80211` (**`NL80211_IFTYPE_MONITOR`**) с захватом метаданных Radiotap в Wireshark / `tcpdump` и диагностической отправкой тестовых кадров IEEE 802.11 (`IEEE80211_TX_CTL_INJECTED`).
+Набор патчей уровня ядра Linux (`PATCH v4`, `patches/v4/`) и кросс-версионный модуль расширения (`src/rtw89_mon.{c,h}`) для штатного открытого драйвера **`rtw89`** (**Realtek RTL8852AE** PCIe `[10ec:8852]`), обеспечивающий полноценную работу режима мониторинга `mac80211` (**`NL80211_IFTYPE_MONITOR`**) в Wireshark / `tcpdump` / `airodump-ng` и инъекцию сырых кадров IEEE 802.11 (**`IEEE80211_TX_CTL_INJECTED`** / `aireplay-ng`) на standalone-интерфейсе монитора.
 
-Модуль работает **исключительно на стороне драйвера ОС Linux** со штатной неизменённой подписанной прошивкой из пакета `linux-firmware`.
+Работает **исключительно на стороне драйвера ОС Linux** со штатной неизменённой подписанной прошивкой (`rtw8852a_fw.bin` на 32-битном ядре `MIPS32`/`MIPS16e`) из пакета `linux-firmware`.
 
 ---
 
-## Наглядные доказательства работоспособности (Верификация в Kali Linux)
-
-> [!TIP]
-> **100% работоспособность подтверждена**: На приведённых ниже реальных скриншотах продемонстрирована работа пропатченного драйвера в **Kali Linux (ядро 7.1.5+kali-amd64)** на реальном адаптере **Realtek RTL8852AE PCIe (`[10ec:8852]`)**.
+## Наглядные результаты проверки (`RTL8852AE`, Kali Linux `7.1.5`)
 
 ### 1. Захват пакетов IEEE 802.11 Radiotap в Wireshark
-Перехват реального радиоэфира в режиме монитора: приём кадров Management (Beacon), Control (ACK, Block Ack, RTS, CTS) и Data со всеми метаданными Radiotap (2462 МГц, RSSI `-18 dBm` / `-24 dBm`):
+Приём кадров Management (Beacon, Probe), Control (ACK, BlockAck, RTS, CTS) и чужих одноадресных кадров Data со всеми метаданными Radiotap:
 
 ![Wireshark RTL8852AE Monitor Mode Capture](screenshots/wireshark_monitor_capture.png)
 
-### 2. Тест инъекции пакетов на 100% (`aireplay-ng -9`)
-Успешный тест инъекции сырых кадров через `aireplay-ng -9`: **100% успешной доставки (30/30 ответов от точек доступа)**:
+### 2. Инъекция пакетов (`aireplay-ng -9`)
+100% доставка кадров (`10/10` до нагрузочного теста и `30/30` после 25 циклов пересоздания интерфейса под параллельной raw TX нагрузкой):
 
 ![RTL8852AE aireplay-ng Packet Injection Benchmark](screenshots/aireplay_packet_injection.png)
 
 ---
 
-## Какие ограничения и ошибки `rtw89` исправляет проект
+## Что исправляет серия `PATCH v4`
 
-1. **Настройка аппаратного MAC-фильтра приёма (`reg.h` / `mac.c`)**
-   В базовой конфигурации регистры Band 0 MAC отбрасывают управляющие кадры Control (RTS, CTS, ACK, BlockAck) и чужие одноадресные кадры Data, не совпавшие с таблицей `ADDR_CAM`, а после аппаратного сканирования фильтр пакетов Band 0 может оставаться на паузе. Модуль `rtw89_mon` настраивает регистры `R_AX_RX_FLTR_OPT`, `R_AX_CTRL_FLTR`, `R_AX_MGNT_FLTR` и `R_AX_DATA_FLTR` (`0x55555555`), учитывает флаг `FIF_FCSFAIL` и автоматически восстанавливает фильтр при переключении радиоканалов (`rtw89_set_channel()`).
-2. **Устранение разыменования `NULL`-указателя `vif` при отправке через монитор (`mac80211.c`, `core.c`)**
-   В функциях `rtw89_ops_tx()` и `rtw89_core_tx_write()` макрос `vif_to_rtwvif(vif)` вызывался до проверки `info->control.vif != NULL` (в мониторном тракте `mac80211` поле `control.vif` может быть `NULL`). Функция `rtw89_mon_resolve_tx_vif()` безопасно подставляет активный мониторный `vif`.
-3. **Исправление выбора скорости и `TXWD_INFO` в `rtw89_core_tx_update_injection()` (`core.c`)**
-   При отсутствии явной скорости в заголовке Radiotap подсистема `mac80211` передаёт знаковое значение `s8 rates[0].idx = -1`, которое в базовом драйвере приводилось к `u8` (`255` — некорректный индекс скорости), а флаг `en_wd_info` не выставлялся для не-Management кадров. Функция `rtw89_mon_fixup_tx_desc()` выбирает валидную базовую скорость (`RTW89_HW_RATE_OFDM6` — 6 Мбит/с), активирует `en_wd_info`, `use_rate`, `dis_data_fb` и ограничивает число повторов (`tx_cnt_lmt = 1`) при флаге `IEEE80211_TX_CTL_NO_ACK`.
-4. **Инициализация контекста `mac_id` для неассоциированного мониторного интерфейса (`fw.h`)**
-   При создании интерфейса `NL80211_IFTYPE_MONITOR` (`IEEE80211_HW_WANT_MONITOR_VIF`) модуль инициализирует таблицы `h2c_default_cmac_tbl` / `h2c_default_dmac_tbl`, регистрирует контекст `mac_id` через штатный вызов `rtw89_fw_h2c_join_info()` (`RTW89_SELF_ROLE_AP` + `RTW89_NET_TYPE_NO_LINK`) и снимает паузу планировщика через `rtw89_fw_h2c_macid_pause()`.
-
----
-
-## Совместимость с ядрами Linux
-
-Скрипт `scripts/patch_rtw89.py` автоматически определяет поколение внутреннего API драйвера `rtw89`:
-* **API Gen 1 (`Linux 6.1 – 6.10`)**: классическая структура `struct rtw89_vif` и синхронизация на `rtwdev->mutex`.
-* **API Gen 2 (`Linux 6.11 – 7.x+` и `lwfinger/rtw89`)**: MLO-архитектура `struct rtw89_vif_link`, `pure_monitor_mode_vif` и `wiphy_lock`.
+1. **`Patch 1/4` — Аппаратная фильтрация MAC RX (`mac80211.c`)**
+   В `rtw89_ops_configure_filter()` сохраняются `FIF_CONTROL | FIF_PSPOLL` в `*new_flags`, а при активном `IEEE80211_CONF_MONITOR` формируется локальная копия `rx_fltr` со сброшенными битами `B_AX_A_MC`, `B_AX_A_UC_CAM_MATCH`, `B_AX_A_BC_CAM_MATCH`, `B_AX_A_MC_LIST_CAM_MATCH`, `B_AX_A_BCN_CHK_EN` и `B_AX_UID_FILTER_MASK` без затирания базового `rtwdev->hal.rx_fltr`.
+2. **`Patch 2/4` — RCU-защита указателя `pure_monitor_mode_vif` (`core.h`, `core.c`, `mac80211.c`)**
+   Поле `pure_monitor_mode_vif` аннотировано `__rcu`, пересчитывается через `rtw89_recalc_pure_monitor_vif()` при добавлении и удалении интерфейсов и очищается через `RCU_INIT_POINTER(..., NULL)` + `synchronize_rcu()` до освобождения аппаратных ресурсов интерфейса, исключая Use-After-Free при одновременной инъекции и удалении `mon0`.
+3. **`Patch 3/4` — Инъекция сырых кадров на standalone-интерфейсе монитора (`core.c`, `mac80211.c`)**
+   * Разрешает `!vif || vif->type == NL80211_IFTYPE_MONITOR` через `pure_monitor_mode_vif` под `rcu_read_lock()`, проверяет `skb->len >= ieee80211_hdrlen(fc)` и записывает `info->control.vif`.
+   * Выставляет `RTW89_NET_TYPE_NO_LINK` и `RTW89_SELF_ROLE_AP` в `rtw89_vif_type_mapping()`, благодаря чему штатный `rtw89_mac_vif_init()` инициализирует таблицу `CCTL` в прошивке без лишних вызовов `rtw89_fw_h2c_join_info()`.
+   * Безопасно маршрутизирует короткие Control-кадры (`10B ACK`, `16B RTS`) через `RTW89_CORE_TX_TYPE_MGMT`, пропускает `traffic_stats_accu`, `wow_parse_akm`, `btc_spec_pkt_notify`, `update_he_qos_htc` и `update_ampdu_info` для инъектируемых кадров, исправляет знаковый индекс скорости (`s8 idx < 0` с учётом `data_retry_lowest_rate` и `IEEE80211_TX_CTL_NO_CCK_RATE`), ограничивает повторы при `IEEE80211_TX_CTL_NO_ACK` и сохраняет пользовательский `seq_ctrl` (`upd_wlan_hdr = false`, `hw_ssn_sel = 0`, `hw_seq_mode = 0`).
+4. **`Patch 4/4` — Восстановление канала после рестарта монитора (`mac80211.c`)**
+   В `rtw89_ops_config()` при `IEEE80211_CONF_CHANGE_MONITOR`, `!rtwdev->chip->support_chanctx_num` и неактивном `RTW89_PHY_0` после `rtw89_ops_stop()` восстанавливает `hw->conf.chandef` и вызывает `rtw89_set_channel()` ровно один раз без двойной RF-калибровки.
 
 ---
 
-## Быстрый старт
+## Быстрый старт и подробные инструкции
 
-### 1. Проверка окружения Linux
-```bash
-chmod +x scripts/*.sh scripts/*.py
-./scripts/build_module.sh --check-env
-```
-
-### 2. Сборка и установка модулей (пример для Debian / Ubuntu / Kali)
-```bash
-sudo apt install linux-headers-$(uname -r) linux-source build-essential
-
-mkdir -p ~/rtw89_src
-tar -xf /usr/src/linux-source-*.tar.xz \
-  --strip-components=6 -C ~/rtw89_src \
-  --wildcards '*/drivers/net/wireless/realtek/rtw89/*'
-
-./scripts/build_module.sh --rtw89-dir ~/rtw89_src --install
-```
-
-### 3. Захват кадров 802.11 в Wireshark / `tcpdump` и диагностический тест
-```bash
-sudo python3 scripts/verify_monitor_diag.py \
-  --iface wlan0 \
-  --freq 2412 \
-  --duration 5 \
-  --diag-tx \
-  --restore-managed
-```
-
-### 4. Удаление и возврат к штатному драйверу дистрибутива
-```bash
-./scripts/build_module.sh --uninstall
-python3 scripts/patch_rtw89.py --rtw89-dir ~/rtw89_src --revert
-```
-
----
-
-## Правовая информация и соответствие регуляторным нормам
-
-* **Отсутствие проприетарных файлов прошивки**: Репозиторий **не содержит**, не модифицирует и не распространяет бинарные образы прошивок (`*.bin`). Драйвер работает со штатной подписанной прошивкой из официального пакета `linux-firmware` (`/lib/firmware/rtw89/`).
-* **Сохранение регуляторных ограничений (`cfg80211`)**: Частотные планы стран (`wireless-regdb`), запреты каналов (`IEEE80211_CHAN_DISABLED`, `NO_IR`), механизмы обнаружения радаров (`DFS`), таблицы `SAR` и лимиты выходной мощности передатчика в `regd.c`, `sar.c` и `phy.c` **не изменяются**.
-* **Лицензия**: Двойная открытая лицензия `GPL-2.0-only OR BSD-3-Clause` ([LICENSE](../LICENSE)), полностью совпадающая с лицензией подсистемы `drivers/net/wireless/realtek/rtw89/` в основном дереве ядра Linux.
-* **Товарные знаки**: Realtek и RTL8852AE являются товарными знаками корпорации Realtek Semiconductor Corp. Данный проект представляет собой независимый открытый набор патчей для подсистемы `mac80211` ядра Linux и не аффилирован с Realtek Semiconductor Corp.
+Полное руководство по применению `patches/v4/`, сборке через `scripts/build_module.sh` / `dkms.conf` и запуску верификации доступно в корневом файле **[README_RU.md](../README_RU.md)**.

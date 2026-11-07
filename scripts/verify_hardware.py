@@ -140,7 +140,13 @@ def raw_tx_worker(mon_iface, stop_event, result_queue):
         "<HH6s6s6sH", 0x0048, 0, local_test_mac, local_test_mac,
         local_test_mac, 0x0010,
     )
-    frame = radiotap + dot11_null
+    dot11_ack = struct.pack("<HH6s", 0x00D4, 0, local_test_mac)
+    dot11_rts = struct.pack("<HH6s6s", 0x00B4, 0, local_test_mac, local_test_mac)
+    frames = (
+        radiotap + dot11_null,
+        radiotap + dot11_ack,
+        radiotap + dot11_rts,
+    )
     sock = None
     while not stop_event.is_set():
         if sock is None:
@@ -153,7 +159,7 @@ def raw_tx_worker(mon_iface, stop_event, result_queue):
                 time.sleep(0.01)
                 continue
         try:
-            sock.send(frame)
+            sock.send(frames[sent % len(frames)])
             sent += 1
         except OSError:
             errors += 1
@@ -181,10 +187,10 @@ def main():
     parser.add_argument("--iface", default="wlan0")
     parser.add_argument("--monitor", default="mon0")
     parser.add_argument("--channel", type=int, default=5)
-    parser.add_argument("--duration", type=int, default=12)
+    parser.add_argument("--duration", type=float, default=12.0)
     parser.add_argument("--cycles", type=int, default=25)
-    parser.add_argument("--settle", type=int, default=12)
-    parser.add_argument("--series", default="v3-candidate")
+    parser.add_argument("--settle", type=float, default=12.0)
+    parser.add_argument("--series", default="v4")
     parser.add_argument("--keep-monitor", action="store_true")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -218,7 +224,8 @@ def main():
     result_queue = None
     dmesg_before = ""
     nmcli = shutil.which("nmcli")
-    initial_operstate = pathlib.Path(f"/sys/class/net/{args.iface}/operstate").read_text().strip()
+    iface_flags = int(pathlib.Path(f"/sys/class/net/{args.iface}/flags").read_text().strip(), 16)
+    initial_admin_state = "up" if (iface_flags & 0x1) else "down"
     rfkill_before = run_cmd(["rfkill", "list"]).stdout
     save_text(output / "rfkill-before.txt", rfkill_before)
     wifi_was_blocked = bool(re.search(r"Wireless LAN[\s\S]*?Soft blocked: yes", rfkill_before))
@@ -226,9 +233,16 @@ def main():
     try:
         dmesg_before = run_cmd(["dmesg"]).stdout
         save_text(output / "dmesg-before.txt", dmesg_before)
+        dev_link = pathlib.Path(f"/sys/class/net/{args.iface}/device")
+        pci_info = ""
+        if dev_link.exists():
+            slot = dev_link.resolve().name
+            pci_info = run_cmd(["lspci", "-nn", "-s", slot], check=False).stdout.strip()
+        if not pci_info:
+            pci_info = run_cmd(["lspci", "-nn", "-d", "10ec:"], check=False).stdout.strip()
         environment = {
             "uname": run_cmd(["uname", "-a"]).stdout.strip(),
-            "pci": run_cmd(["lspci", "-nn", "-d", "10ec:8852"]).stdout.strip(),
+            "pci": pci_info,
             "kernel_taint": pathlib.Path("/proc/sys/kernel/tainted").read_text().strip(),
         }
         firmware = pathlib.Path("/lib/firmware/rtw89/rtw8852a_fw.bin")
@@ -301,7 +315,9 @@ def main():
         report["concurrency_and_stress"]["teardown_cycles_completed"] = args.cycles
 
         run_cmd(["iw", "dev", args.monitor, "del"])
-        create_monitor()
+        run_cmd(["iw", "dev", args.iface, "interface", "add", args.monitor, "type", "monitor"])
+        mon_created = True
+        run_cmd(["ip", "link", "set", args.monitor, "up"])
         time.sleep(args.settle)
         save_text(output / "post-stress-monitor-info.txt", run_cmd(["iw", "dev", args.monitor, "info"]).stdout)
         post_pcap = output / "post-stress-rx.pcap"
@@ -353,7 +369,7 @@ def main():
         if mon_created and not args.keep_monitor:
             run_cmd(["ip", "link", "set", args.monitor, "down"], check=False)
             run_cmd(["iw", "dev", args.monitor, "del"], check=False)
-        run_cmd(["ip", "link", "set", args.iface, initial_operstate], check=False)
+        run_cmd(["ip", "link", "set", args.iface, initial_admin_state], check=False)
         if nmcli:
             run_cmd([nmcli, "device", "set", args.iface, "managed", "yes"], check=False)
         if wifi_was_blocked and not args.keep_monitor:

@@ -1,0 +1,231 @@
+From ef9b4b94e1f326d19301959dce904f7b9e7692e2 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Sat, 7 Nov 2026 19:50:19 +0500
+Subject: [PATCH v4 3/4] wifi: rtw89: support raw frame injection on standalone
+ monitor interface
+
+Attempting to inject 802.11 frames via a raw socket on a standalone
+rtw89 monitor interface fails for several reasons:
+
+1. Because rtw89 sets IEEE80211_HW_WANT_MONITOR_VIF without
+   IEEE80211_HW_QUEUE_CONTROL, __ieee80211_tx() passes
+   info->control.vif == NULL whenever local->monitor_sdata is
+   absent (during reconfig, after monitor_sdata teardown, or when
+   a non-monitor VIF is concurrently open and the injected frame's
+   addr2 does not match any active BSS), causing vif_to_rtwvif(vif)
+   in rtw89_ops_tx() to dereference a negative offset from NULL.
+   In addition, ieee80211_del_virtual_monitor() calls
+   drv_remove_interface() before clearing local->monitor_sdata, so
+   concurrent monitor TX with a non-NULL monitor vif must also be
+   gated by rtwdev->pure_monitor_mode_vif under RCU.
+
+2. rtw89_vif_type_mapping() leaves net_type and self_role as zero
+   (RTW89_SELF_ROLE_CLIENT) for NL80211_IFTYPE_MONITOR. During
+   rtw89_mac_vif_init(), rtw89_fw_h2c_join_info() sends a
+   disconnect H2C (net_type == RTW89_NET_TYPE_NO_LINK), causing the
+   firmware H2C_FUNC_MAC_JOININFO handler to tear down the MACID
+   CCTL entry when self_role != RTW89_SELF_ROLE_AP and silently
+   discard TX descriptors queued for that MACID.
+
+3. Injected 802.11 Control frames (10-16 bytes, such as ACK or RTS)
+   do not carry a seq_ctrl field at offset 22 and are misclassified
+   as RTW89_CORE_TX_TYPE_DATA. For injected Data frames,
+   ieee80211_monitor_start_xmit() points skb_network_header at the
+   802.11 MAC header, so rtw89_traffic_stats_accu() and
+   rtw89_core_tx_btc_spec_pkt_notify() misread the 802.11 header as
+   ip_hdr(skb)/udp_hdr(skb), while rtw89_wow_parse_akm() inspects
+   injected Association Request frames.
+
+4. In rtw89_core_tx_update_injection(), info->control.rates[0].idx
+   is stored in an unsigned u8, turning the default -1 (when
+   radiotap omits a rate field) into 0xff and programming an
+   invalid hardware data_rate. In addition, hardware sequence
+   override (hw_seq_mode / upd_wlan_hdr) and retry limits ignore
+   IEEE80211_TX_CTL_ASSIGN_SEQ and IEEE80211_TX_CTL_NO_ACK.
+
+Fix these issues to enable standalone monitor injection:
+- Resolve NULL or NL80211_IFTYPE_MONITOR vif in rtw89_ops_tx() via
+  rtwdev->pure_monitor_mode_vif under rcu_read_lock(), validate
+  skb->len against ieee80211_hdrlen(), populate info->control.vif,
+  and drop the skb cleanly if no standalone monitor vif is active.
+- Map NL80211_IFTYPE_MONITOR to RTW89_NET_TYPE_NO_LINK and
+  RTW89_SELF_ROLE_AP in rtw89_vif_type_mapping() so the existing
+  rtw89_mac_vif_init() join_info H2C initializes the MACID CCTL
+  entry in firmware without extra H2C calls.
+- Route non-Data frames via RTW89_CORE_TX_TYPE_MGMT, guard
+  hdr->seq_ctrl against Control and < 24-byte frames, and skip
+  traffic_stats_accu, wow_parse_akm, btc_spec_pkt_notify,
+  update_he_qos_htc, and update_ampdu_info on injected frames.
+- Handle negative rate indices in rtw89_core_tx_update_injection()
+  (falling back to data_retry_lowest_rate or OFDM6 when
+  IEEE80211_TX_CTL_NO_CCK_RATE is set), honor IEEE80211_TX_CTL_NO_ACK
+  with a single attempt, and clear upd_wlan_hdr, hw_ssn_sel, and
+  hw_seq_mode when IEEE80211_TX_CTL_ASSIGN_SEQ is not set.
+
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/core.c     | 46 +++++++++++++++----
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 26 +++++++++--
+ 2 files changed, 60 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
+index b1cf899..13cb2ef 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.c
++++ b/drivers/net/wireless/realtek/rtw89/core.c
+@@ -640,7 +640,7 @@ rtw89_core_get_tx_type(struct rtw89_dev *rtwdev,
+ 	struct ieee80211_hdr *hdr = (void *)skb->data;
+ 	__le16 fc = hdr->frame_control;
+ 
+-	if (ieee80211_is_mgmt(fc) || ieee80211_is_any_nullfunc(fc))
++	if (!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc))
+ 		return RTW89_CORE_TX_TYPE_MGMT;
+ 
+ 	return RTW89_CORE_TX_TYPE_DATA;
+@@ -1244,12 +1244,32 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
+ 	enum mac80211_rate_control_flags flags = info->control.rates[0].flags;
+ 	struct rtw89_tx_desc_info *desc_info = &tx_req->desc_info;
+ 	const struct rtw89_chan *chan;
+-	u8 idx = info->control.rates[0].idx;
++	s8 idx = info->control.rates[0].idx;
+ 	u8 nss, mcs;
+ 
+ 	desc_info->use_rate = true;
+ 	desc_info->dis_data_fb = true;
+ 
++	if (!(info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ)) {
++		desc_info->upd_wlan_hdr = false;
++		desc_info->hw_ssn_sel = 0;
++		desc_info->hw_seq_mode = 0;
++	}
++
++	if (info->flags & IEEE80211_TX_CTL_NO_ACK) {
++		desc_info->tx_cnt_lmt_en = true;
++		desc_info->tx_cnt_lmt = 1;
++	}
++
++	if (idx < 0) {
++		if (tx_req->tx_type != RTW89_CORE_TX_TYPE_MGMT)
++			desc_info->data_rate =
++				(info->flags & IEEE80211_TX_CTL_NO_CCK_RATE) ?
++				RTW89_HW_RATE_OFDM6 :
++				desc_info->data_retry_lowest_rate;
++		return;
++	}
++
+ 	if (flags & IEEE80211_TX_RC_160_MHZ_WIDTH)
+ 		desc_info->data_bw = 3;
+ 	else if (flags & IEEE80211_TX_RC_80_MHZ_WIDTH)
+@@ -1286,7 +1306,7 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,
+ 	enum btc_pkt_type pkt_type;
+ 	bool upd_wlan_hdr = false;
+ 	bool is_bmc;
+-	u16 seq;
++	u16 seq = 0;
+ 
+ 	desc_info->pkt_size = skb->len;
+ 
+@@ -1302,7 +1322,9 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,
+ 	else if (tx_req->vif)
+ 		desc_info->mlo = ieee80211_vif_is_mld(tx_req->vif);
+ 
+-	seq = (le16_to_cpu(hdr->seq_ctrl) & IEEE80211_SCTL_SEQ) >> 4;
++	if (!ieee80211_is_ctl(hdr->frame_control) &&
++	    skb->len >= sizeof(struct ieee80211_hdr_3addr))
++		seq = (le16_to_cpu(hdr->seq_ctrl) & IEEE80211_SCTL_SEQ) >> 4;
+ 	addr_cam = rtw89_get_addr_cam_of(tx_req->rtwvif_link,
+ 					 tx_req->rtwsta_link);
+ 	if (addr_cam->valid && desc_info->mlo)
+@@ -1326,9 +1348,11 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,
+ 		break;
+ 	case RTW89_CORE_TX_TYPE_DATA:
+ 		rtw89_core_tx_update_data_info(rtwdev, tx_req);
+-		pkt_type = rtw89_core_tx_btc_spec_pkt_notify(rtwdev, tx_req);
+-		rtw89_core_tx_update_he_qos_htc(rtwdev, tx_req, pkt_type);
+-		rtw89_core_tx_update_ampdu_info(rtwdev, tx_req, pkt_type);
++		if (!(info->flags & IEEE80211_TX_CTL_INJECTED)) {
++			pkt_type = rtw89_core_tx_btc_spec_pkt_notify(rtwdev, tx_req);
++			rtw89_core_tx_update_he_qos_htc(rtwdev, tx_req, pkt_type);
++			rtw89_core_tx_update_ampdu_info(rtwdev, tx_req, pkt_type);
++		}
+ 		rtw89_core_tx_update_llc_hdr(rtwdev, desc_info, skb);
+ 		break;
+ 	default:
+@@ -1444,8 +1468,10 @@ static int rtw89_core_tx_write_link(struct rtw89_dev *rtwdev,
+ 	tx_req.rtwsta_link = rtwsta_link;
+ 	tx_req.with_wait = !!wait;
+ 
+-	rtw89_traffic_stats_accu(rtwdev, rtwvif, skb, true, true);
+-	rtw89_wow_parse_akm(rtwdev, skb);
++	if (!(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED)) {
++		rtw89_traffic_stats_accu(rtwdev, rtwvif, skb, true, true);
++		rtw89_wow_parse_akm(rtwdev, skb);
++	}
+ 	rtw89_core_tx_update_desc_info(rtwdev, &tx_req);
+ 	rtw89_core_tx_wake(rtwdev, &tx_req);
+ 
+@@ -5731,6 +5757,8 @@ void rtw89_vif_type_mapping(struct rtw89_vif_link *rtwvif_link, bool assoc)
+ 		rtwvif_link->self_role = RTW89_SELF_ROLE_CLIENT;
+ 		break;
+ 	case NL80211_IFTYPE_MONITOR:
++		rtwvif_link->net_type = RTW89_NET_TYPE_NO_LINK;
++		rtwvif_link->self_role = RTW89_SELF_ROLE_AP;
+ 		break;
+ 	default:
+ 		WARN_ON(1);
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index 152bad1..dc03b26 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -23,26 +23,46 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
+ 	struct rtw89_dev *rtwdev = hw->priv;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	struct ieee80211_vif *vif = info->control.vif;
+-	struct rtw89_vif *rtwvif = vif_to_rtwvif(vif);
+ 	struct ieee80211_sta *sta = control->sta;
+ 	u32 flags = IEEE80211_SKB_CB(skb)->flags;
++	struct rtw89_vif *rtwvif;
+ 	int ret, qsel;
+ 
++	rcu_read_lock();
++
++	if (!vif || vif->type == NL80211_IFTYPE_MONITOR) {
++		struct ieee80211_hdr *hdr = (void *)skb->data;
++
++		rtwvif = rcu_dereference(rtwdev->pure_monitor_mode_vif);
++		if (!rtwvif || skb->len < sizeof(struct ieee80211_cts) ||
++		    skb->len < ieee80211_hdrlen(hdr->frame_control)) {
++			ieee80211_free_txskb(hw, skb);
++			goto out_unlock;
++		}
++		vif = rtwvif_to_vif(rtwvif);
++		info->control.vif = vif;
++	} else {
++		rtwvif = vif_to_rtwvif(vif);
++	}
++
+ 	if (rtwvif->offchan && !(flags & IEEE80211_TX_CTL_TX_OFFCHAN) && sta) {
+ 		struct rtw89_sta *rtwsta = sta_to_rtwsta(sta);
+ 
+ 		rtw89_debug(rtwdev, RTW89_DBG_TXRX, "ops_tx during offchan\n");
+ 		skb_queue_tail(&rtwsta->roc_queue, skb);
+-		return;
++		goto out_unlock;
+ 	}
+ 
+ 	ret = rtw89_core_tx_write(rtwdev, vif, sta, skb, &qsel);
+ 	if (ret) {
+ 		rtw89_err(rtwdev, "failed to transmit skb: %d\n", ret);
+ 		ieee80211_free_txskb(hw, skb);
+-		return;
++		goto out_unlock;
+ 	}
+ 	rtw89_core_tx_kick_off(rtwdev, qsel);
++
++out_unlock:
++	rcu_read_unlock();
+ }
+ 
+ static void rtw89_ops_wake_tx_queue(struct ieee80211_hw *hw,
+-- 
+2.56.0.windows.4
+

@@ -8,7 +8,7 @@ on:
 
 jobs:
   verify:
-    name: Patcher & Clean-Room Verification
+    name: Patch Series, Integrator, Kbuild/Sparse & Clean-Room Verification
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -20,10 +20,65 @@ jobs:
           python-version: "3.12"
 
       - name: Check Python syntax
-        run: python3 -m py_compile scripts/patch_rtw89.py scripts/verify_monitor_diag.py tests/test_patch_rtw89.py
+        run: >-
+          python3 -m py_compile
+          scripts/patch_rtw89.py
+          scripts/verify_monitor_diag.py
+          scripts/verify_hardware.py
+          tests/test_patch_rtw89.py
 
       - name: Check shell script syntax
         run: bash -n scripts/build_module.sh
 
-      - name: Run Gen 1 & Gen 2 patch/revert unit tests
+      - name: Run Gen 1, Gen 2 & PATCH v4 unit tests
         run: python3 -m unittest discover -s tests -v
+
+      - name: Verify PATCH v4 clean git-am & checkpatch.pl --strict against upstream base
+        run: |
+          set -euo pipefail
+          BASE="d48723711bae9b8cdc56719c448ba42fef28cbee"
+          TMP="$(mktemp -d)"
+          mkdir -p "$TMP/drivers/net/wireless/realtek/rtw89" "$TMP/scripts"
+          for f in core.c core.h mac80211.c Makefile; do
+            curl -fsSL "https://raw.githubusercontent.com/torvalds/linux/${BASE}/drivers/net/wireless/realtek/rtw89/${f}" \
+              -o "$TMP/drivers/net/wireless/realtek/rtw89/${f}"
+          done
+          for s in checkpatch.pl spelling.txt const_structs.checkpatch; do
+            curl -fsSL "https://raw.githubusercontent.com/torvalds/linux/${BASE}/scripts/${s}" \
+              -o "$TMP/scripts/${s}"
+          done
+          chmod +x "$TMP/scripts/checkpatch.pl"
+
+          # 1. Test patch_rtw89.py apply + revert against real upstream rtw89 files
+          python3 scripts/patch_rtw89.py --rtw89-dir "$TMP/drivers/net/wireless/realtek/rtw89" --apply
+          python3 scripts/patch_rtw89.py --rtw89-dir "$TMP/drivers/net/wireless/realtek/rtw89" --revert
+
+          # 2. Test git am of PATCH v4 (1/4 .. 4/4) with zero fuzz
+          git -C "$TMP" init -q
+          git -C "$TMP" config user.name "CI"
+          git -C "$TMP" config user.email "ci@example.invalid"
+          git -C "$TMP" add drivers/net/wireless/realtek/rtw89
+          git -C "$TMP" commit -q -m "base"
+          git -C "$TMP" am "$GITHUB_WORKSPACE"/patches/v4/v4-000[1-4]-*.patch
+
+          # 3. Run Linux checkpatch.pl --strict
+          perl "$TMP/scripts/checkpatch.pl" --strict --no-tree \
+            "$GITHUB_WORKSPACE"/patches/v4/v4-000[1-4]-*.patch
+
+      - name: Verify Kbuild compilation (W=1 -Werror) and sparse (C=1) static analysis
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends sparse "linux-headers-$(uname -r)"
+          KTAG="v$(uname -r | cut -d. -f1,2)"
+          KTMP="$(mktemp -d)"
+          git clone --depth 1 --filter=blob:none --no-checkout --branch "$KTAG" \
+            https://github.com/torvalds/linux.git "$KTMP"
+          git -C "$KTMP" sparse-checkout set drivers/net/wireless/realtek/rtw89
+          git -C "$KTMP" checkout -q
+
+          python3 scripts/patch_rtw89.py --rtw89-dir "$KTMP/drivers/net/wireless/realtek/rtw89" --apply
+          make -C "/lib/modules/$(uname -r)/build" \
+            M="$KTMP/drivers/net/wireless/realtek/rtw89" \
+            KCFLAGS="-Werror" W=1 C=1 -j"$(nproc)" \
+            core.o mac80211.o rtw89_mon.o

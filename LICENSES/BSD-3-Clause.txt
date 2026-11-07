@@ -1,6 +1,6 @@
 BSD 3-Clause License
 
-Copyright (c) 2026, rtw89-8852ae-monitor contributors
+Copyright (c) 2026, Enver Ikromov <owner@ph4ntom-rev.uz>
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without

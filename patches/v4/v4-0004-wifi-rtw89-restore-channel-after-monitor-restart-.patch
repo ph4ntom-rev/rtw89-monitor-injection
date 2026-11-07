@@ -1,0 +1,59 @@
+From 57e1e0836c9bf20bb4793801890980021e2c556a Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Sat, 7 Nov 2026 19:50:19 +0500
+Subject: [PATCH v4 4/4] wifi: rtw89: restore channel after monitor restart on
+ non-chanctx chips
+
+Wi-Fi 6 rtw89 chips (such as RTL8852A, RTL8852B, and RTL8851B) have
+support_chanctx_num == 0 and rely on mac80211 chanctx emulation via
+hw->conf.chandef and rtw89_ops_config().
+
+When the last monitor interface is brought down or deleted,
+rtw89_ops_stop() powers down the MAC/BB/RF and clears the
+RTW89_PHY_0 entity state, while mac80211 retains the previous
+local->hw.conf.chandef. When a monitor interface is brought up
+again on the same channel, ieee80211_hw_conf_chan() sees no
+chandef change and omits IEEE80211_CONF_CHANGE_CHANNEL, leaving
+the RF uncalibrated and RX/TX silent until the user manually
+switches to a different channel and back.
+
+In rtw89_ops_config(), when IEEE80211_CONF_CHANGE_MONITOR enables
+IEEE80211_CONF_MONITOR on non-chanctx chips and RTW89_PHY_0 is not
+yet active, apply hw->conf.chandef and call rtw89_set_channel().
+On initial bringup where IEEE80211_CONF_CHANGE_CHANNEL has already
+configured RTW89_PHY_0, the entity state check is already true and
+avoids redundant RF calibration.
+
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index dc03b26..c06bdd9 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -118,9 +118,19 @@ static int rtw89_ops_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
+ 	    !rtwdev->scanning)
+ 		rtw89_enter_ips(rtwdev);
+ 
+-	if (changed & IEEE80211_CONF_CHANGE_MONITOR)
++	if (changed & IEEE80211_CONF_CHANGE_MONITOR) {
+ 		rtw89_physts_parsing_init(rtwdev);
+ 
++		if ((hw->conf.flags & IEEE80211_CONF_MONITOR) &&
++		    !rtwdev->chip->support_chanctx_num &&
++		    !rtw89_get_entity_state(rtwdev, RTW89_PHY_0) &&
++		    cfg80211_chandef_valid(&hw->conf.chandef)) {
++			rtw89_config_entity_chandef(rtwdev, RTW89_CHANCTX_0,
++						    &hw->conf.chandef);
++			rtw89_set_channel(rtwdev);
++		}
++	}
++
+ 	return 0;
+ }
+ 
+-- 
+2.56.0.windows.4
+

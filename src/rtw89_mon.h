@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (c) 2026 rtw89-8852ae-monitor contributors
+ * Copyright (c) 2026 Enver Ikromov <owner@ph4ntom-rev.uz>
  *
- * mac80211 NL80211_IFTYPE_MONITOR RX filter & Radiotap diagnostic TX support
- * for Realtek 802.11ax (RTW89_CHIP_AX / RTL8852AE) wireless adapters.
+ * Cross-kernel (Linux 6.1 - 7.x+) out-of-tree integration helpers for
+ * rtw89 NL80211_IFTYPE_MONITOR RX filter, standalone raw frame injection,
+ * and non-chanctx monitor restart channel restoration (matching PATCH v4).
  */
 
 #ifndef __RTW89_MON_H__
@@ -28,14 +29,25 @@
 #define RTW89_MON_HAS_PURE_VIF 1
 #endif
 
+#ifndef RTW89_MON_PURE_VIF_RCU
+#define RTW89_MON_PURE_VIF_RCU 0
+#endif
+
+#ifndef RTW89_MON_HAS_TX_INJECTION_FUNC
+#define RTW89_MON_HAS_TX_INJECTION_FUNC 1
+#endif
+
 void rtw89_mon_register_hw_caps(struct rtw89_dev *rtwdev);
 bool rtw89_mon_is_active(struct rtw89_dev *rtwdev);
 
 int rtw89_mon_add_vif_post(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif);
 void rtw89_mon_remove_vif_pre(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif);
 
+void rtw89_mon_prepare_rx_filter(struct rtw89_dev *rtwdev, u32 *rx_fltr,
+				 unsigned int *total_flags);
 void rtw89_mon_apply_rx_filter(struct rtw89_dev *rtwdev, unsigned int *total_flags);
 void rtw89_mon_post_set_channel(struct rtw89_dev *rtwdev);
+void rtw89_mon_config_channel(struct rtw89_dev *rtwdev, u32 changed);
 
 struct ieee80211_vif *rtw89_mon_resolve_tx_vif(struct rtw89_dev *rtwdev,
 					       struct ieee80211_vif *vif);

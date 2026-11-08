@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause
+#
+# Template for scripts/dkms_prepare.sh. Do not use this file directly:
+# dkms_prepare.sh fills in the kernel series and module list for the
+# rtw89 sources it copies into /usr/src/@PKG@-@VER@/.
+
+PACKAGE_NAME="@PKG@"
+PACKAGE_VERSION="@VER@"
+
+# Only build for kernels of the same series as the copied rtw89 sources.
+# Other kernels are skipped by DKMS and keep their stock rtw89 driver.
+BUILD_EXCLUSIVE_KERNEL="@KVER_REGEX@"
+
+PRE_BUILD="scripts/dkms_pre_build.sh ${kernelver}"
+MAKE[0]="make -C ${kernel_source_dir} M=${dkms_tree}/${PACKAGE_NAME}/${PACKAGE_VERSION}/build modules"
+CLEAN="make -C ${kernel_source_dir} M=${dkms_tree}/${PACKAGE_NAME}/${PACKAGE_VERSION}/build clean"
+
+AUTOINSTALL="yes"
+
+@MODULES@

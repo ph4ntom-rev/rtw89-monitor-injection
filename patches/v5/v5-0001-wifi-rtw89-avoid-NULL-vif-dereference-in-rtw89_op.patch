@@ -1,0 +1,55 @@
+From 429b7b0965af66a890307bec811cf1649ea9be39 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Sun, 8 Nov 2026 02:59:20 +0500
+Subject: [PATCH v5 01/10] wifi: rtw89: avoid NULL vif dereference in
+ rtw89_ops_tx()
+
+rtw89 sets IEEE80211_HW_WANT_MONITOR_VIF but not
+IEEE80211_HW_QUEUE_CONTROL. For frames transmitted on a monitor
+interface, ieee80211_tx_frags() therefore passes
+info->control.vif == NULL to the driver whenever local->monitor_sdata
+does not exist, e.g. when a raw frame is sent on a monitor interface
+while a station interface is also up and the frame's addr2 does not
+match any running interface.
+
+rtw89_ops_tx() unconditionally converts the vif with vif_to_rtwvif()
+and dereferences rtwvif->offchan, so such a frame makes the kernel
+access memory at a small offset from NULL.
+
+Drop frames without a vif, as there is no MAC ID or port they could
+be transmitted on.
+
+Fixes: a0e97ae3f332 ("wifi: rtw89: add ieee80211::remain_on_channel ops")
+Cc: stable@vger.kernel.org
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index 9e6cafc..87f5377 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -23,11 +23,18 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
+ 	struct rtw89_dev *rtwdev = hw->priv;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	struct ieee80211_vif *vif = info->control.vif;
+-	struct rtw89_vif *rtwvif = vif_to_rtwvif(vif);
+ 	struct ieee80211_sta *sta = control->sta;
+ 	u32 flags = IEEE80211_SKB_CB(skb)->flags;
++	struct rtw89_vif *rtwvif;
+ 	int ret, qsel;
+ 
++	if (unlikely(!vif)) {
++		ieee80211_free_txskb(hw, skb);
++		return;
++	}
++
++	rtwvif = vif_to_rtwvif(vif);
++
+ 	if (rtwvif->offchan && !(flags & IEEE80211_TX_CTL_TX_OFFCHAN) && sta) {
+ 		struct rtw89_sta *rtwsta = sta_to_rtwsta(sta);
+ 
+-- 
+2.56.0.windows.4
+

@@ -368,7 +368,9 @@ class PatchRtw89TestCase(unittest.TestCase):
 
             patched_core = (tree / "core.c").read_text(encoding="utf-8")
             patched_mac = (tree / "mac80211.c").read_text(encoding="utf-8")
-            self.assertIn("if (!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc))", patched_core)
+            self.assertIn("if (ieee80211_is_mgmt(fc) || ieee80211_is_any_nullfunc(fc))", patched_core)
+            self.assertIn("IEEE80211_TX_CTL_INJECTED) &&\n\t    !ieee80211_is_data(fc))", patched_core)
+            self.assertNotIn("!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc)", patched_core)
             self.assertIn("rtw89_mon_register_hw_caps(rtwdev);", patched_core)
             self.assertIn("!ieee80211_is_ctl(hdr->frame_control)", patched_core)
             self.assertIn("if (!(info->flags & IEEE80211_TX_CTL_INJECTED))", patched_core)
@@ -416,7 +418,9 @@ class PatchRtw89TestCase(unittest.TestCase):
 
             self.assertIn("struct rtw89_vif __rcu *pure_monitor_mode_vif;", patched_core_h)
             self.assertIn("rcu_access_pointer(rtwdev->pure_monitor_mode_vif)", patched_core)
-            self.assertIn("if (!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc))", patched_core)
+            self.assertIn("if (ieee80211_is_mgmt(fc) || ieee80211_is_any_nullfunc(fc))", patched_core)
+            self.assertIn("IEEE80211_TX_CTL_INJECTED) &&\n\t    !ieee80211_is_data(fc))", patched_core)
+            self.assertNotIn("!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc)", patched_core)
             self.assertIn("s8 idx = info->control.rates[0].idx;", patched_core)
             self.assertIn("if (idx < 0)\n\t\treturn;", patched_core)
             self.assertIn("rtwvif_link->self_role = RTW89_SELF_ROLE_AP;", patched_core)
@@ -480,6 +484,46 @@ class PatchRtw89TestCase(unittest.TestCase):
             self.assertIn("Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
             self.assertNotIn("Fixes: d9204e99b696", content)
             self.assertNotIn("target_rx_fltr", content)
+            diff_body = content.split("\ndiff --git ", 1)[1]
+            self.assertNotIn("rtw89_fw_h2c_join_info", diff_body)
+
+    def test_v5_patch_series_metadata_and_hygiene(self):
+        v5_dir = REPO_ROOT / "patches" / "v5"
+        self.assertTrue(v5_dir.is_dir(), "patches/v5 directory missing")
+        patches = sorted(v5_dir.glob("v5-00[0-9][0-9]-*.patch"))
+        self.assertEqual(len(patches), 11, "Expected cover letter + 10 patches in patches/v5/")
+
+        cover = patches[0].read_text(encoding="utf-8")
+        self.assertNotIn("*** SUBJECT HERE ***", cover)
+        self.assertNotIn("*** BLURB HERE ***", cover)
+        self.assertIn("base-commit: d48723711bae9b8cdc56719c448ba42fef28cbee", cover)
+
+        def body(idx):
+            return patches[idx].read_text(encoding="utf-8")
+
+        # 1/10 and 2/10 are standalone fixes with Fixes: tags
+        self.assertIn('Fixes: a0e97ae3f332 ("wifi: rtw89: add ieee80211::remain_on_channel ops")', body(1))
+        self.assertIn("Cc: stable@vger.kernel.org", body(1))
+        self.assertIn("Fixes: e96abe4fd7cd", body(2))
+        self.assertIn("+\ts8 idx = info->control.rates[0].idx;", body(2))
+
+        # 4/10 is a plain RCU conversion without the v4 recalc helper
+        self.assertIn("rtw89_set_pure_monitor_vif", body(4))
+        self.assertNotIn("rtw89_recalc_pure_monitor_vif", body(4))
+        self.assertIn("No functional change intended.", body(4))
+
+        # 7/10 only reroutes injected control frames
+        p7 = body(7)
+        self.assertIn("IEEE80211_TX_CTL_INJECTED) &&", p7)
+        self.assertNotIn("+\tif (!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc))", p7)
+
+        for p in patches[1:]:
+            content = p.read_text(encoding="utf-8")
+            self.assertTrue(content.startswith("From "), f"Missing mbox From line in {p.name}")
+            self.assertIn("From: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
+            self.assertIn("Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
+            self.assertNotIn("Fixes: d9204e99b696", content)
+            self.assertNotIn("\r\n", content, f"CRLF line endings in {p.name}")
             diff_body = content.split("\ndiff --git ", 1)[1]
             self.assertNotIn("rtw89_fw_h2c_join_info", diff_body)
 

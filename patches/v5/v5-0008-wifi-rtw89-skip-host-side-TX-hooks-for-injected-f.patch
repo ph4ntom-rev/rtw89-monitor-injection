@@ -1,0 +1,63 @@
+From 2ec4f8842ce2503ac844ef4cdf3034a9f26a3ffc Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Sun, 8 Nov 2026 03:02:10 +0500
+Subject: [PATCH v5 08/10] wifi: rtw89: skip host-side TX hooks for injected
+ frames
+
+Several TX hooks assume frames that were built by the local network
+stack for an associated link:
+
+- rtw89_traffic_stats_accu() and rtw89_core_tx_btc_spec_pkt_notify()
+  look at ip_hdr()/udp_hdr(). For frames injected on a monitor
+  interface the network header points into the 802.11 header, so
+  traffic statistics and BT-coexistence notifications are derived
+  from unrelated bytes.
+- rtw89_wow_parse_akm() records the AKM from (Re)Association Request
+  frames for WoWLAN, which an injected frame must not change.
+- rtw89_core_tx_update_he_qos_htc() and
+  rtw89_core_tx_update_ampdu_info() modify the frame or descriptor
+  based on the station's HE and aggregation state, while injected
+  frames are expected to be sent as supplied.
+
+Skip these hooks when IEEE80211_TX_CTL_INJECTED is set.
+
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/core.c | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
+index b4a1eed..94610e3 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.c
++++ b/drivers/net/wireless/realtek/rtw89/core.c
+@@ -1351,9 +1351,11 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,
+ 		break;
+ 	case RTW89_CORE_TX_TYPE_DATA:
+ 		rtw89_core_tx_update_data_info(rtwdev, tx_req);
+-		pkt_type = rtw89_core_tx_btc_spec_pkt_notify(rtwdev, tx_req);
+-		rtw89_core_tx_update_he_qos_htc(rtwdev, tx_req, pkt_type);
+-		rtw89_core_tx_update_ampdu_info(rtwdev, tx_req, pkt_type);
++		if (likely(!(info->flags & IEEE80211_TX_CTL_INJECTED))) {
++			pkt_type = rtw89_core_tx_btc_spec_pkt_notify(rtwdev, tx_req);
++			rtw89_core_tx_update_he_qos_htc(rtwdev, tx_req, pkt_type);
++			rtw89_core_tx_update_ampdu_info(rtwdev, tx_req, pkt_type);
++		}
+ 		rtw89_core_tx_update_llc_hdr(rtwdev, desc_info, skb);
+ 		break;
+ 	default:
+@@ -1469,8 +1471,10 @@ static int rtw89_core_tx_write_link(struct rtw89_dev *rtwdev,
+ 	tx_req.rtwsta_link = rtwsta_link;
+ 	tx_req.with_wait = !!wait;
+ 
+-	rtw89_traffic_stats_accu(rtwdev, rtwvif, skb, true, true);
+-	rtw89_wow_parse_akm(rtwdev, skb);
++	if (likely(!(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED))) {
++		rtw89_traffic_stats_accu(rtwdev, rtwvif, skb, true, true);
++		rtw89_wow_parse_akm(rtwdev, skb);
++	}
+ 	rtw89_core_tx_update_desc_info(rtwdev, &tx_req);
+ 	rtw89_core_tx_wake(rtwdev, &tx_req);
+ 
+-- 
+2.56.0.windows.4
+

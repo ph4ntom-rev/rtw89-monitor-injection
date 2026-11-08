@@ -19,6 +19,10 @@ DO_RELOAD=0
 DO_INSTALL=0
 DO_UNINSTALL=0
 DO_DISABLE_PS=0
+ASSUME_YES=0
+ALLOW_UNSIGNED=0
+SIGN_KEY=""
+SIGN_CERT=""
 LOADED_LEAF_MODS=()
 
 usage() {
@@ -26,6 +30,7 @@ usage() {
 Usage:
   $0 --check-env
   $0 --rtw89-dir /path/to/rtw89 [--reload] [--install] [--disable-ps]
+       [--sign-key <key> --sign-cert <cert>] [--allow-unsigned] [--yes]
   $0 --uninstall
 
 Options:
@@ -35,6 +40,13 @@ Options:
   --install          Install built .ko files into ${UPDATES_DIR} and run depmod -a
   --disable-ps       Optional: write disable_ps_mode=y to ${MODPROBE_CONF}
   --uninstall        Remove ${UPDATES_DIR} override and restore stock distro rtw89 modules
+  --sign-key <file>  Private key used to sign the modules (Secure Boot / MOK)
+  --sign-cert <file> Certificate (DER or PEM) matching --sign-key
+  --allow-unsigned   Load/install unsigned modules even if Secure Boot is enabled
+  --yes              Do not ask before unloading the running rtw89 driver
+
+All rtw89 modules are rebuilt and installed together, so that rtw89_core
+and the chip/bus modules always come from the same source tree.
 EOF
 }
 
@@ -45,7 +57,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --rtw89-dir)
-            RTW89_DIR="$(realpath "$2")"
+            RTW89_DIR="$(realpath "${2:?--rtw89-dir needs a directory}")"
             shift 2
             ;;
         --reload)
@@ -58,6 +70,22 @@ while [[ $# -gt 0 ]]; do
             ;;
         --disable-ps)
             DO_DISABLE_PS=1
+            shift
+            ;;
+        --sign-key)
+            SIGN_KEY="$(realpath "${2:?--sign-key needs a file}")"
+            shift 2
+            ;;
+        --sign-cert)
+            SIGN_CERT="$(realpath "${2:?--sign-cert needs a file}")"
+            shift 2
+            ;;
+        --allow-unsigned)
+            ALLOW_UNSIGNED=1
+            shift
+            ;;
+        -y|--yes)
+            ASSUME_YES=1
             shift
             ;;
         --uninstall)
@@ -109,12 +137,68 @@ unload_rtw89_stack() {
     done
 }
 
+secure_boot_enabled() {
+    command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi "SecureBoot enabled"
+}
+
+confirm_unload() {
+    [[ ${ASSUME_YES} -eq 1 ]] && return 0
+    echo ""
+    echo "[WARN] The running rtw89 driver will be unloaded. Wi-Fi connections on this"
+    echo "       machine will drop until the new modules are loaded."
+    if [[ ! -t 0 ]]; then
+        echo "[ERROR] Not running interactively; re-run with --yes to confirm." >&2
+        exit 1
+    fi
+    local answer
+    read -r -p "Continue? [y/N] " answer
+    [[ "${answer}" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
+}
+
+# Sign the built modules, or refuse to load unsigned modules under Secure Boot
+# (the kernel would reject them after the stock driver has been unloaded).
+sign_or_check_modules() {
+    local sign_file="${KBUILD_DIR}/scripts/sign-file"
+    local ko
+
+    if [[ -n "${SIGN_KEY}" || -n "${SIGN_CERT}" ]]; then
+        [[ -n "${SIGN_KEY}" && -n "${SIGN_CERT}" ]] || {
+            echo "[ERROR] --sign-key and --sign-cert must be used together." >&2
+            exit 1
+        }
+        [[ -x "${sign_file}" ]] || {
+            echo "[ERROR] ${sign_file} not found; install the full kernel headers." >&2
+            exit 1
+        }
+        for ko in "${RTW89_DIR}"/*.ko; do
+            "${sign_file}" sha256 "${SIGN_KEY}" "${SIGN_CERT}" "${ko}"
+        done
+        echo "[OK] Signed $(ls "${RTW89_DIR}"/*.ko | wc -l) modules with ${SIGN_CERT}"
+        return 0
+    fi
+
+    if secure_boot_enabled && [[ ${ALLOW_UNSIGNED} -eq 0 ]]; then
+        cat >&2 <<EOF
+[ERROR] Secure Boot is enabled and the modules are not signed, so the kernel
+        would refuse to load them. Either:
+          - enroll a Machine Owner Key and pass it with
+            --sign-key MOK.priv --sign-cert MOK.der
+            (e.g. Ubuntu: /var/lib/shim-signed/mok/MOK.{priv,der} after
+             'sudo update-secureboot-policy --new-key' and a reboot), or
+          - disable Secure Boot, or
+          - pass --allow-unsigned if your kernel does not enforce signatures.
+EOF
+        exit 1
+    fi
+}
+
 if [[ ${DO_UNINSTALL} -eq 1 ]]; then
     echo "=== Uninstalling rtw89 updates override for kernel ${KVER} ==="
     detect_loaded_leaf_modules
     sudo rm -rf "${UPDATES_DIR}"
     sudo rm -f "${MODPROBE_CONF}"
     sudo depmod -a "${KVER}"
+    confirm_unload
     unload_rtw89_stack
     for mod in "${LOADED_LEAF_MODS[@]}"; do
         sudo modprobe "${mod}" || true
@@ -154,7 +238,10 @@ if [[ ${DO_CHECK_ONLY} -eq 1 ]]; then
     $0 --rtw89-dir ~/rtw89_build --install
 
   Option B (Upstream wireless-next / mainline git tree):
-    git am patches/v4/v4-000[1-4]*.patch
+    git am patches/v5/v5-00*-wifi-*.patch
+
+  Option C (DKMS, rebuilt for kernels of the same series):
+    scripts/dkms_prepare.sh --source /usr/src/linux-source-<version>.tar.xz
 EOF
     exit 0
 fi
@@ -182,6 +269,10 @@ echo ""
 echo "Built modules in ${RTW89_DIR}:"
 ls -lh "${RTW89_DIR}"/*.ko
 
+if [[ ${DO_INSTALL} -eq 1 || ${DO_RELOAD} -eq 1 ]]; then
+    sign_or_check_modules
+fi
+
 if [[ ${DO_INSTALL} -eq 1 ]]; then
     echo ""
     echo "=== [4] Installing Modules into ${UPDATES_DIR} ==="
@@ -192,6 +283,7 @@ if [[ ${DO_INSTALL} -eq 1 ]]; then
         printf "options rtw89_core disable_ps_mode=y\n" | sudo tee "${MODPROBE_CONF}" >/dev/null
     fi
     sudo depmod -a "${KVER}"
+    confirm_unload
     unload_rtw89_stack
     for mod in "${LOADED_LEAF_MODS[@]}"; do
         sudo modprobe "${mod}"
@@ -201,6 +293,7 @@ elif [[ ${DO_RELOAD} -eq 1 ]]; then
     echo ""
     echo "=== [4] Reloading rtw89 Modules (live session) ==="
     detect_loaded_leaf_modules
+    confirm_unload
     unload_rtw89_stack
 
     PS_OPT=""

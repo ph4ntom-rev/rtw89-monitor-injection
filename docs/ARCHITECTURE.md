@@ -1,89 +1,122 @@
-# Technical Architecture (`PATCH v4` & `rtw89_mon`)
+# Technical notes (`PATCH v5` and `rtw89_mon`)
 
-This document describes the architecture of the **`PATCH v4`** upstream `rtw89` patch series (`patches/v4/`) and its cross-kernel out-of-tree counterpart (`src/rtw89_mon.{c,h}` + `scripts/patch_rtw89.py` for Linux `6.1`–`7.x+`).
-
-All changes operate strictly on the host `mac80211` driver side using public hardware register definitions (`reg.h`), standard Host-to-Card (`H2C`) lifecycle calls (`mac.c` / `fw.h`), and `txwd` descriptor fields (`txrx.h`). The stock signed firmware image (`/lib/firmware/rtw89/rtw8852a_fw.bin`) is unmodified.
+This document explains the changes in [`patches/v5/`](../patches/v5/) and how the
+out-of-tree integrator (`scripts/patch_rtw89.py` + `src/rtw89_mon.{c,h}`) maps to them.
+All changes are in the host driver; the firmware image is not modified.
 
 ---
 
-## 1. Monitor Mode MAC RX Filtering (`Patch 1/4`)
+## 1. NULL vif in `rtw89_ops_tx()` (patch 1)
 
-On `RTW89_CHIP_AX` / `RTW89_CHIP_BE` hardware, `rtwdev->hal.rx_fltr` defaults to `R_AX_RX_FLTR_OPT_MODE0`, which drops unicast frames not matching `ADDR_CAM`, drops beacons failing BSSID checks, and applies UID filtering.
+rtw89 sets `IEEE80211_HW_WANT_MONITOR_VIF` but not `IEEE80211_HW_QUEUE_CONTROL`. For a
+frame sent on a monitor interface, `ieee80211_tx_frags()` passes the virtual monitor vif
+if `local->monitor_sdata` exists, and `NULL` otherwise (`net/mac80211/tx.c`). mac80211
+only creates the virtual monitor vif while no non-monitor interface is open
+(`net/mac80211/iface.c`), so injecting on `mon0` while `wlan0` is up as a station gives
+`info->control.vif == NULL`.
 
-In `rtw89_ops_configure_filter()` (`mac80211.c`):
-1. `FIF_CONTROL | FIF_PSPOLL` are retained in `*new_flags` (matching the hardware `R_AX_CTRL_FLTR` / `R_BE_CTRL_FLTR` initialization to `RTW89_FWD_TO_HOST`), and `rtwdev->hal.rx_fltr` is updated from `FIF_*` flags as usual so baseline station/AP filter bits remain intact when leaving monitor mode.
-2. A local `u32 rx_fltr = rtwdev->hal.rx_fltr` copy is derived before programming `rtw89_mac_set_rx_fltr()`.
-3. When `hw->conf.flags & IEEE80211_CONF_MONITOR` is set, the local `rx_fltr` clears:
+Since a0e97ae3f332 ("wifi: rtw89: add ieee80211::remain_on_channel ops"),
+`rtw89_ops_tx()` reads `rtwvif->offchan` from `vif->drv_priv` unconditionally, which
+dereferences memory near `NULL`. Patch 1 drops such frames.
 
-| Bit / Mask (`reg.h`) | Bit Position | Effect When Cleared in Monitor Mode |
+## 2. Radiotap "no rate" index (patch 2)
+
+Without a rate in the radiotap header, `info->control.rates[0].idx` is `-1`.
+`rtw89_core_tx_update_injection()` (added in e96abe4fd7cd) stored it in a `u8`, so the
+TX descriptor got `0xff` + base rate. Patch 2 uses `s8`; management frames keep the rate
+from `rtw89_core_tx_update_mgmt_info()`, data frames fall back to
+`data_retry_lowest_rate` (OFDM6 with `IEEE80211_TX_CTL_NO_CCK_RATE`).
+
+## 3. Monitor RX filter (patch 3)
+
+`rtw89_ops_configure_filter()` sets `B_AX_SNIFFER_MODE` in monitor mode but leaves
+several drop conditions active. Patch 3 keeps `FIF_CONTROL | FIF_PSPOLL` and clears these
+bits in the local `rx_fltr` value while `IEEE80211_CONF_MONITOR` is set, so
+`rtwdev->hal.rx_fltr` stays unchanged for normal operation:
+
+| Bit (`reg.h`) | Position | Effect when cleared |
 | :--- | :--- | :--- |
-| `B_AX_A_MC` | `BIT(3)` | Passes multicast frames even when `IFF_PROMISC` (`FIF_ALLMULTI`) is unset |
-| `B_AX_A_UC_CAM_MATCH` | `BIT(4)` | Passes cross-BSS unicast frames without `ADDR_CAM` match |
-| `B_AX_A_BC_CAM_MATCH` | `BIT(5)` | Passes broadcast frames across BSSs |
-| `B_AX_A_MC_LIST_CAM_MATCH` | `BIT(6)` | Disables multicast list CAM filtering |
-| `B_AX_A_BCN_CHK_EN` | `BIT(7)` | Disables hardware beacon BSSID filtering |
-| `B_AX_UID_FILTER_MASK` | `GENMASK(31, 24)` | Disables per-UID hardware frame drops |
+| `B_AX_A_MC` | `BIT(3)` | multicast passes without `FIF_ALLMULTI` |
+| `B_AX_A_UC_CAM_MATCH` | `BIT(4)` | unicast from other BSSs passes without an address CAM entry |
+| `B_AX_A_BC_CAM_MATCH` | `BIT(5)` | broadcast from other BSSs passes |
+| `B_AX_A_MC_LIST_CAM_MATCH` | `BIT(6)` | no multicast list filtering |
+| `B_AX_A_BCN_CHK_EN` | `BIT(7)` | no beacon BSSID check |
+| `B_AX_UID_FILTER_MASK` | `GENMASK(31, 24)` | no UID based drops |
 
-`rx_fltr` is written to `RTW89_MAC_0` (and `RTW89_MAC_1` when `rtwdev->dbcc_en` is active). When monitor mode exits (`!(hw->conf.flags & IEEE80211_CONF_MONITOR)`), `rtwdev->hal.rx_fltr` restores normal filtering automatically.
+The `B_BE_*` definitions for `R_BE_RX_FLTR_OPT` use the same positions. Wi-Fi 7 chips
+were not runtime-tested.
+
+## 4. `pure_monitor_mode_vif` and RCU (patches 4 and 6)
+
+`rtw89_ops_tx()` runs without the wiphy lock, while interface add/remove changes
+`rtwdev->pure_monitor_mode_vif` under it. Also, `ieee80211_del_virtual_monitor()` calls
+`drv_remove_interface()` **before** it clears `local->monitor_sdata`, so mac80211 can
+still pass a monitor vif that the driver has already removed.
+
+- Patch 4 annotates the pointer `__rcu` and updates it through
+  `rtw89_set_pure_monitor_vif()`, which calls `synchronize_rcu()` whenever a published
+  vif is replaced or cleared. In `rtw89_ops_remove_interface()` the pointer is cleared
+  before the link, port and MAC ID are released. The update rules stay as upstream
+  (adding a monitor vif sets it, any removal clears it). Because mac80211 only adds the
+  virtual monitor vif while it is the only interface, this already means "the monitor vif
+  is the only interface". The `rtw89_recalc_pure_monitor_vif()` helper from v4 was
+  therefore dropped.
+- Patch 6 resolves both `NULL` and monitor vifs in `rtw89_ops_tx()` through
+  `rcu_dereference(rtwdev->pure_monitor_mode_vif)` under `rcu_read_lock()`, checks that
+  the frame is at least as long as its 802.11 header, and drops it otherwise.
+
+## 5. Firmware role for the monitor MAC ID (patch 5)
+
+`rtw89_vif_type_mapping()` left `net_type`/`self_role` at zero for monitor interfaces
+(`RTW89_NET_TYPE_NO_LINK`, `RTW89_SELF_ROLE_CLIENT`). On RTL8852AE with firmware
+0.13.36.2, frames queued on that MAC ID were not transmitted. With
+`RTW89_SELF_ROLE_AP` they are. This was found by testing; the reason inside the firmware
+is not documented, and the cover letter asks Realtek to confirm it. `self_role` is only
+used by the join info and role maintain H2C commands, and `net_type` stays `NO_LINK`, so
+port configuration is not affected.
+
+## 6. Injected frames on the TX path (patches 7–9)
+
+- **Patch 7**: injected non-data frames (e.g. 10-byte ACK, 16-byte RTS) are classified as
+  management frames. Frames built by mac80211, such as BlockAckReq, keep the data path.
+  `hdr->seq_ctrl` is only read from non-control frames of at least 24 bytes.
+- **Patch 8**: for `IEEE80211_TX_CTL_INJECTED`, skip `rtw89_traffic_stats_accu()` and
+  `rtw89_core_tx_btc_spec_pkt_notify()` (they read `ip_hdr()`/`udp_hdr()`, which point
+  into the 802.11 header for injected frames), `rtw89_wow_parse_akm()`,
+  `rtw89_core_tx_update_he_qos_htc()` and `rtw89_core_tx_update_ampdu_info()`.
+- **Patch 9**: without `IEEE80211_TX_CTL_ASSIGN_SEQ`, clear `upd_wlan_hdr`, `hw_ssn_sel`
+  and `hw_seq_mode` so the hardware keeps the sequence number from user space. With
+  `IEEE80211_TX_CTL_NO_ACK`, limit the frame to one transmission.
+
+## 7. Channel after monitor restart (patch 10)
+
+Chips without channel contexts (`support_chanctx_num == 0`, e.g. RTL8852AE) get the
+channel through `rtw89_ops_config()`. When the last interface goes down,
+`rtw89_ops_stop()` clears the `RTW89_PHY_0` entity state, while mac80211 keeps
+`hw.conf.chandef`. Bringing a monitor interface up again on the same channel then only
+sends `IEEE80211_CONF_CHANGE_MONITOR`, and RX/TX stay silent.
+
+Patch 10 re-applies `hw->conf.chandef` from `rtw89_ops_config()` when monitor mode is
+enabled on such a chip and `RTW89_PHY_0` is inactive. With v4 on RTL8852AE, ftrace showed
+one `rtw89_set_channel()` and one `rtw89_chip_rfk_channel()` for cold start, `down/up`
+and `del/add/up`. The cover letter asks whether Realtek prefers a fix in
+`rtw89_ops_start()`/`rtw89_ops_stop()` instead.
 
 ---
 
-## 2. RCU Protection for `pure_monitor_mode_vif` (`Patch 2/4`)
+## 8. Out-of-tree integrator
 
-`rtw89_ops_tx()` runs in the `mac80211` TX fastpath without holding `wiphy_lock` (`hw->wiphy->mtx`), whereas `rtw89_ops_add_interface()` and `rtw89_ops_remove_interface()` mutate `rtwdev->pure_monitor_mode_vif` under `wiphy_lock`.
+For distribution kernels, `scripts/patch_rtw89.py` edits a copy of the rtw89 sources and
+links `src/rtw89_mon.c` into `rtw89_core.ko`:
 
-To eliminate data races and Use-After-Free windows during concurrent raw TX and `iw dev mon0 del`:
-* `core.h`: annotates `struct rtw89_vif __rcu *pure_monitor_mode_vif;`.
-* `mac80211.c` (`rtw89_recalc_pure_monitor_vif`): called from both `rtw89_ops_add_interface()` and `rtw89_ops_remove_interface()` (at `bottom:` after `list_del_init(&rtwvif->list)`). Publishes the sole `NL80211_IFTYPE_MONITOR` entry when `list_is_singular(&rtwdev->rtwvifs_list)` (including when a second non-monitor VIF is brought down), or clears `pure_monitor_mode_vif` via `RCU_INIT_POINTER(..., NULL)` and runs `synchronize_rcu()`.
-* `mac80211.c` (`rtw89_ops_remove_interface`): when `rcu_access_pointer(rtwdev->pure_monitor_mode_vif) == rtwvif`, clears `pure_monitor_mode_vif` via `RCU_INIT_POINTER(..., NULL)` and calls `synchronize_rcu()` **before** `__rtw89_ops_remove_iface_link()` releases hardware `mac_id`, port, and CAM entries.
-* `core.c`: uses `rcu_access_pointer()` in `rtw89_chip_rfk_channel()` and `rcu_dereference_protected(..., lockdep_is_held(&wiphy->mtx))` in `rtw89_chip_rfk_channel_for_pure_mon_vif()`.
+- It detects the driver generation (`struct rtw89_vif_link` present or not) and whether
+  `pure_monitor_mode_vif` exists. Kernels without that field use a small table in
+  `rtw89_mon.c` instead.
+- Changes match the v5 behaviour, including routing only **injected** control frames
+  through the management path.
+- Every edit is anchored on exact source text. When an anchor is not found, that step is
+  skipped and missing from the `[APPLY]` output, so check the output on older kernels.
+- `--revert` restores the original files from `.orig` backups.
 
----
-
-## 3. Standalone Monitor Raw Frame Injection (`Patch 3/4`)
-
-### 3.1. `NULL` and Monitor `control.vif` Resolution in `rtw89_ops_tx()`
-Because `rtw89` sets `IEEE80211_HW_WANT_MONITOR_VIF` without `IEEE80211_HW_QUEUE_CONTROL`:
-* `mac80211`'s `__ieee80211_tx()` leaves `info->control.vif == NULL` whenever `local->monitor_sdata` is absent (for example, when a non-monitor VIF is also open and the injected frame's `addr2` does not match any active BSS, or during teardown/reconfig).
-* Furthermore, `ieee80211_del_virtual_monitor()` calls `drv_remove_interface()` (`rtw89_ops_remove_interface()`) **before** clearing `RCU_INIT_POINTER(local->monitor_sdata, NULL)`.
-
-`rtw89_ops_tx()` enters `rcu_read_lock()` and gates `if (!vif || vif->type == NL80211_IFTYPE_MONITOR)` through `rcu_dereference(rtwdev->pure_monitor_mode_vif)` -> `rtwvif_to_vif(rtwvif)`, validates `skb->len >= sizeof(struct ieee80211_cts)` and `skb->len >= ieee80211_hdrlen(hdr->frame_control)`, populates `info->control.vif = vif`, and drops the `skb` cleanly via `ieee80211_free_txskb()` if no standalone monitor VIF is active or the frame header is truncated.
-
-### 3.2. Firmware Role Initialization (`RTW89_SELF_ROLE_AP`)
-`RTL8852AE` (`8852A`) runs a 32-bit Little-Endian `MIPS32` / `MIPS16e` MCU firmware (`rtw8852a_fw.bin`). Analysis of the firmware `H2C_FUNC_MAC_JOININFO` handler shows why unpatched monitor TX descriptors were silently dropped:
-* Unpatched `rtw89_vif_type_mapping()` left `NL80211_IFTYPE_MONITOR` with `net_type = 0` and `self_role = 0` (`RTW89_SELF_ROLE_CLIENT`).
-* During `rtw89_mac_vif_init()`, `rtw89_fw_h2c_join_info(..., dis_conn=true)` sent a disconnect `JOININFO` H2C, causing firmware to skip `CCTL` SRAM initialization (`0xb8840000 + macid * 32`) and mark the `mac_id` disconnected.
-* Setting `rtwvif_link->net_type = RTW89_NET_TYPE_NO_LINK` and `rtwvif_link->self_role = RTW89_SELF_ROLE_AP` in `rtw89_vif_type_mapping()` lets the standard `rtw89_mac_vif_init()` / `rtw89_mac_vif_deinit()` (`ROLE_MAINTAIN(REMOVE)`) lifecycle initialize the `mac_id` `CCTL` entry without enabling client-mode TBTT/beacon-loss tracking or requiring extra `rtw89_fw_h2c_join_info()` calls in `mac80211.c`.
-
-### 3.3. Short Control Frames, Injected Data Guards, Rate Fallback & Sequence Preservation (`core.c`)
-* **TX Type Classification (`rtw89_core_get_tx_type`)**: `!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc)` routes Management, Control (`ACK` 10B, `RTS` 16B), and NullFunc frames to `RTW89_CORE_TX_TYPE_MGMT` (`RTW89_TX_QSEL_B0_MGMT`).
-* **Short Header & Injected Frame Guards**:
-  * `rtw89_core_tx_update_desc_info()` only reads `hdr->seq_ctrl` when `!ieee80211_is_ctl(hdr->frame_control) && skb->len >= sizeof(struct ieee80211_hdr_3addr)` (`24` bytes).
-  * Because `ieee80211_monitor_start_xmit()` sets `skb_network_header` and `skb_transport_header` to the 802.11 MAC header offset, `rtw89_core_tx_write_link()` skips `rtw89_traffic_stats_accu()` and `rtw89_wow_parse_akm()` when `IEEE80211_TX_CTL_INJECTED` is set, and `rtw89_core_tx_update_desc_info()` skips `rtw89_core_tx_btc_spec_pkt_notify()`, `rtw89_core_tx_update_he_qos_htc()`, and `rtw89_core_tx_update_ampdu_info()`.
-* **Injection Descriptor (`rtw89_core_tx_update_injection`)**:
-  * Declares `s8 idx = info->control.rates[0].idx;` instead of `u8` (`0xff`) and falls back to `desc_info->data_retry_lowest_rate` (or `RTW89_HW_RATE_OFDM6` when `IEEE80211_TX_CTL_NO_CCK_RATE` is set) for Data frames when Radiotap omits an explicit rate (`idx < 0`).
-  * Clears `desc_info->upd_wlan_hdr = false`, `desc_info->hw_ssn_sel = 0`, and `desc_info->hw_seq_mode = 0` when `!(info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ)` so user-supplied 802.11 sequence numbers (`IEEE80211_RADIOTAP_F_TX_NOSEQNO`) are preserved over the air.
-  * Bounds hardware retries (`tx_cnt_lmt_en = true`, `tx_cnt_lmt = 1`) when `IEEE80211_TX_CTL_NO_ACK` is set.
-
----
-
-## 4. Non-Chanctx Monitor Restart Channel Restoration (`Patch 4/4`)
-
-Chips with `support_chanctx_num == 0` (such as `RTL8852AE`) configure monitor channels through `rtw89_ops_config()` (`IEEE80211_CONF_CHANGE_CHANNEL`).
-
-When the last monitor VIF goes down or is deleted, `rtw89_ops_stop()` powers down the MAC/BB and clears `RTW89_PHY_0` entity state (`rtw89_set_entity_state(rtwdev, RTW89_PHY_0, false)`). If a monitor VIF is brought back up on the **same** `chandef`, `mac80211` toggles `IEEE80211_CONF_CHANGE_MONITOR` without setting `IEEE80211_CONF_CHANGE_CHANNEL`, leaving RF/BB unconfigured on channel 1 defaults.
-
-In `rtw89_ops_config()` (`mac80211.c`), when `changed & IEEE80211_CONF_CHANGE_MONITOR` is set with `IEEE80211_CONF_MONITOR` active, `!rtwdev->chip->support_chanctx_num`, `!rtw89_get_entity_state(rtwdev, RTW89_PHY_0)`, and `cfg80211_chandef_valid(&hw->conf.chandef)`:
-1. Calls `rtw89_config_entity_chandef(rtwdev, RTW89_CHANCTX_0, &hw->conf.chandef)`.
-2. Calls `rtw89_set_channel(rtwdev)`.
-
-Confirmed via kernel `function_graph` (`ftrace`) on `RTL8852AE`:
-* Cold start (`iw phy phy0 interface add mon0 type monitor` + `ip link set mon0 up`): exactly **1** `rtw89_set_channel()` and **1** `rtw89_chip_rfk_channel()` (zero duplicate RF calibration).
-* Same-channel `ip link set mon0 down && ip link set mon0 up`: **1** `rtw89_set_channel()` + **1** `rtw89_chip_rfk_channel()`.
-* Same-channel `iw dev mon0 del && iw phy phy0 interface add mon0 type monitor && ip link set mon0 up` (without re-running `iw set channel`): **1** `rtw89_set_channel()` + **1** `rtw89_chip_rfk_channel()`.
-
----
-
-## 5. Out-of-Tree Cross-Kernel Helper (`src/rtw89_mon.{c,h}` & `scripts/patch_rtw89.py`)
-
-For older distribution kernels (`Linux 6.1`–`7.1`) where `wireless-next` patches have context offsets, `scripts/patch_rtw89.py` detects the driver API generation (`Gen 1`: `Linux 6.1`–`6.10` `struct rtw89_vif` + `rtwdev->mutex`; `Gen 2`: `Linux 6.11+` `struct rtw89_vif_link` + `wiphy_lock`) using a comment/string-aware C brace scanner and links `src/rtw89_mon.c` into `rtw89_core.ko` with identical `v4` semantics.
+CI applies it to the series base, builds with `W=1 C=1`, and checks that `--revert`
+restores the tree exactly. Older kernels are not covered by CI.

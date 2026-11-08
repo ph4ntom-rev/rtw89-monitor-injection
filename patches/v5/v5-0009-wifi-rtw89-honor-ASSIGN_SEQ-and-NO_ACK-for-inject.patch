@@ -1,0 +1,52 @@
+From ae2c0002287e9fb98adfc5111feac7ad8fcdbb84 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Sun, 8 Nov 2026 03:02:34 +0500
+Subject: [PATCH v5 09/10] wifi: rtw89: honor ASSIGN_SEQ and NO_ACK for
+ injected frames
+
+For injected frames, rtw89_core_tx_update_injection() only applies
+the radiotap rate. Two more TX flags are ignored:
+
+- The management path sets hw_ssn_sel/hw_seq_mode, and MLO links set
+  upd_wlan_hdr, so the hardware overwrites the sequence number that
+  user space put into the injected frame even though mac80211 did not
+  request IEEE80211_TX_CTL_ASSIGN_SEQ.
+- IEEE80211_TX_CTL_NO_ACK (e.g. radiotap IEEE80211_RADIOTAP_F_TX_NOACK)
+  does not limit retries, so a frame that will never be acknowledged
+  is retransmitted up to the default retry limit.
+
+Clear the hardware sequence settings unless ASSIGN_SEQ is set, and
+limit NO_ACK frames to a single transmission attempt.
+
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/core.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
+index 94610e3..428f347 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.c
++++ b/drivers/net/wireless/realtek/rtw89/core.c
+@@ -1259,6 +1259,19 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
+ 	desc_info->use_rate = true;
+ 	desc_info->dis_data_fb = true;
+ 
++	/* keep the sequence number supplied by user space */
++	if (!(info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ)) {
++		desc_info->upd_wlan_hdr = false;
++		desc_info->hw_ssn_sel = 0;
++		desc_info->hw_seq_mode = 0;
++	}
++
++	/* no ACK is expected, so do not retry */
++	if (info->flags & IEEE80211_TX_CTL_NO_ACK) {
++		desc_info->tx_cnt_lmt_en = true;
++		desc_info->tx_cnt_lmt = 1;
++	}
++
+ 	/* No rate was given in the radiotap header. Management frames
+ 	 * already carry the rate from rtw89_core_tx_update_mgmt_info(), so
+ 	 * only data frames need a fallback.
+-- 
+2.56.0.windows.4
+

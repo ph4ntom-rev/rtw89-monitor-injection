@@ -3,22 +3,22 @@
  * Copyright (c) 2026 Enver Ikromov <owner@ph4ntom-rev.uz>
  *
  * Cross-kernel (Linux 6.1 - 7.x+) out-of-tree helper module implementing the
- * PATCH v4 rtw89 monitor-mode fixes for distribution trees:
+ * PATCH v5 rtw89 monitor-mode fixes for distribution trees (best effort):
  *
- * 1. Monitor RX Filter (matching v4 1/4):
+ * 1. Monitor RX Filter (PATCH v5 3/10):
  *    Retains FIF_CONTROL and FIF_PSPOLL in *new_flags and clears B_AX_A_MC,
  *    B_AX_A_UC_CAM_MATCH, B_AX_A_BC_CAM_MATCH, B_AX_A_MC_LIST_CAM_MATCH,
  *    B_AX_A_BCN_CHK_EN, and B_AX_UID_FILTER_MASK in the local rx_fltr copy
  *    prior to rtw89_mac_set_rx_fltr() (for both RTW89_MAC_0 and RTW89_MAC_1)
  *    without mutating the baseline rtwdev->hal.rx_fltr state.
  *
- * 2. RCU-Protected Monitor VIF Resolution (matching v4 2/4 & 3/4):
+ * 2. RCU-Protected Monitor VIF Resolution (PATCH v5 4/10 & 6/10):
  *    Publishes the active standalone monitor VIF via RCU across interface
  *    addition and removal (including when a second non-monitor VIF is removed)
  *    and resolves NULL or monitor info->control.vif pointers safely under
  *    rcu_read_lock().
  *
- * 3. Firmware Role & Injection Descriptor Handling (matching v4 3/4):
+ * 3. Firmware Role & Injection Descriptor Handling (PATCH v5 2/10, 5/10, 7/10-9/10):
  *    Ensures NL80211_IFTYPE_MONITOR uses RTW89_NET_TYPE_NO_LINK and
  *    RTW89_SELF_ROLE_AP, routes non-Data frames (including 10-16B Control
  *    frames) via RTW89_CORE_TX_TYPE_MGMT, handles negative rate indices for
@@ -26,7 +26,7 @@
  *    numbers unless IEEE80211_TX_CTL_ASSIGN_SEQ is set, and bounds retries on
  *    IEEE80211_TX_CTL_NO_ACK.
  *
- * 4. Monitor Restart Channel Restoration (matching v4 4/4):
+ * 4. Monitor Restart Channel Restoration (PATCH v5 10/10):
  *    Restores hw->conf.chandef on IEEE80211_CONF_CHANGE_MONITOR when
  *    RTW89_PHY_0 is inactive after rtw89_ops_stop() on non-chanctx chips.
  */
@@ -118,36 +118,6 @@ void rtw89_mon_register_hw_caps(struct rtw89_dev *rtwdev)
 	ieee80211_hw_set(hw, WANT_MONITOR_VIF);
 	ieee80211_hw_set(hw, SIGNAL_DBM);
 }
-EXPORT_SYMBOL(rtw89_mon_register_hw_caps);
-
-bool rtw89_mon_is_active(struct rtw89_dev *rtwdev)
-{
-	struct rtw89_mon_ctx *ctx;
-	unsigned long flags;
-	bool active = false;
-
-	if (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR)
-		return true;
-
-#if RTW89_MON_HAS_PURE_VIF
-#if RTW89_MON_PURE_VIF_RCU
-	if (rcu_access_pointer(rtwdev->pure_monitor_mode_vif))
-		return true;
-#else
-	if (READ_ONCE(rtwdev->pure_monitor_mode_vif))
-		return true;
-#endif
-#endif
-
-	spin_lock_irqsave(&rtw89_mon_lock, flags);
-	ctx = rtw89_mon_get_ctx(rtwdev, false);
-	if (ctx && rcu_access_pointer(ctx->mon_vif))
-		active = true;
-	spin_unlock_irqrestore(&rtw89_mon_lock, flags);
-
-	return active;
-}
-EXPORT_SYMBOL(rtw89_mon_is_active);
 
 static void rtw89_mon_sync_standalone_vif(struct rtw89_dev *rtwdev,
 					  struct rtw89_vif *exclude_rtwvif)
@@ -235,13 +205,11 @@ int rtw89_mon_add_vif_post(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif)
 	rtw89_mon_sync_standalone_vif(rtwdev, NULL);
 	return 0;
 }
-EXPORT_SYMBOL(rtw89_mon_add_vif_post);
 
 void rtw89_mon_remove_vif_pre(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif)
 {
 	rtw89_mon_sync_standalone_vif(rtwdev, vif_to_rtwvif(vif));
 }
-EXPORT_SYMBOL(rtw89_mon_remove_vif_pre);
 
 void rtw89_mon_prepare_rx_filter(struct rtw89_dev *rtwdev, u32 *rx_fltr,
 				 unsigned int *total_flags)
@@ -258,7 +226,6 @@ void rtw89_mon_prepare_rx_filter(struct rtw89_dev *rtwdev, u32 *rx_fltr,
 		      B_AX_A_BCN_CHK_EN |
 		      B_AX_UID_FILTER_MASK);
 }
-EXPORT_SYMBOL(rtw89_mon_prepare_rx_filter);
 
 void rtw89_mon_apply_rx_filter(struct rtw89_dev *rtwdev,
 			       unsigned int *total_flags)
@@ -281,13 +248,6 @@ void rtw89_mon_apply_rx_filter(struct rtw89_dev *rtwdev,
 	if (rtwdev->dbcc_en)
 		rtw89_mac_set_rx_fltr(rtwdev, RTW89_MAC_1, rx_fltr);
 }
-EXPORT_SYMBOL(rtw89_mon_apply_rx_filter);
-
-void rtw89_mon_post_set_channel(struct rtw89_dev *rtwdev)
-{
-	(void)rtwdev;
-}
-EXPORT_SYMBOL(rtw89_mon_post_set_channel);
 
 void rtw89_mon_config_channel(struct rtw89_dev *rtwdev, u32 changed)
 {
@@ -317,7 +277,6 @@ void rtw89_mon_config_channel(struct rtw89_dev *rtwdev, u32 changed)
 #endif
 	rtw89_set_channel(rtwdev);
 }
-EXPORT_SYMBOL(rtw89_mon_config_channel);
 
 /*
  * Must be called under rcu_read_lock() (mac80211 TX fastpath already holds RCU,
@@ -354,7 +313,6 @@ struct ieee80211_vif *rtw89_mon_resolve_tx_vif(struct rtw89_dev *rtwdev,
 
 	return NULL;
 }
-EXPORT_SYMBOL(rtw89_mon_resolve_tx_vif);
 
 void rtw89_mon_fixup_tx_desc(struct rtw89_dev *rtwdev,
 			     struct rtw89_core_tx_request *tx_req)
@@ -460,4 +418,3 @@ void rtw89_mon_fixup_tx_desc(struct rtw89_dev *rtwdev,
 	}
 #endif
 }
-EXPORT_SYMBOL(rtw89_mon_fixup_tx_desc);

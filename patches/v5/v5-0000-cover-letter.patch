@@ -1,0 +1,118 @@
+From 4ed9ced7cf832e52c87306122a654e21c8cf7f9c Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Sun, 8 Nov 2026 03:05:52 +0500
+Subject: [PATCH v5 00/10] wifi: rtw89: monitor mode RX filter and raw frame injection fixes
+
+This series fixes a NULL pointer dereference and an invalid rate
+index on the rtw89 TX path for injected frames, makes monitor mode
+receive frames that are currently dropped by the hardware RX filter,
+and makes raw 802.11 frame injection work on a standalone monitor
+interface.
+
+Patches 1-2 are fixes with Fixes: tags and can be applied on their
+own:
+  1. drop frames without a vif instead of dereferencing NULL in
+     rtw89_ops_tx() (reachable by injecting on a monitor interface
+     while a station interface is up)
+  2. treat the radiotap "no rate" index (-1) as signed
+
+Patch 3 clears RX filter bits that drop frames from other BSSs while
+in monitor mode.
+
+Patches 4-9 enable injection on a standalone monitor interface:
+  4. RCU protection for pure_monitor_mode_vif (no functional change)
+  5. AP self role for monitor interfaces in the join info H2C
+  6. resolve the vif used for monitor TX through
+     pure_monitor_mode_vif
+  7. management path for injected control frames, and no seq_ctrl
+     read beyond the end of control frames
+  8. skip traffic statistics, WoW AKM parsing, BT-coex notification,
+     HE HTC and AMPDU handling for injected frames
+  9. honor IEEE80211_TX_CTL_ASSIGN_SEQ and IEEE80211_TX_CTL_NO_ACK
+
+Patch 10 restores the channel when monitor mode is restarted on the
+same channel on chips without channel context support.
+
+Open questions for Realtek:
+- Patch 5: the need for RTW89_SELF_ROLE_AP was found by testing on
+  RTL8852AE with firmware 0.13.36.2. Is this the intended firmware
+  configuration for a monitor MAC ID, and does it hold for the other
+  AX and BE chips?
+- Patch 10 re-applies the channel from rtw89_ops_config(). Would you
+  prefer resetting the channel state in rtw89_ops_stop() or
+  re-applying it in rtw89_ops_start() instead?
+
+Testing:
+[TODO before sending: the runtime results below were obtained with
+ the v4 code. Re-run scripts/verify_hardware.py on v5 and update or
+ delete this note.]
+- Runtime-tested only on RTL8852AE (10ec:8852, firmware 0.13.36.2),
+  Linux 7.1.5: passive capture on 2.4 and 5 GHz, aireplay-ng -9,
+  injection of 10-byte ACK, 16-byte RTS, management and data frames
+  with and without a radiotap rate, and 25 monitor interface
+  delete/add cycles under concurrent injection. No WARN, oops or
+  lockdep reports.
+- Not runtime-tested on RTL8852B/C, RTL8851B, RTL8922A (BE), USB
+  devices or DBCC setups. The RX filter bits changed in patch 3 have
+  the same positions in R_AX_RX_FLTR_OPT and R_BE_RX_FLTR_OPT.
+- The series builds with W=1 and C=1 (sparse) without new warnings.
+
+Changes in v5:
+- Split the NULL vif fix and the signed rate index fix out as
+  separate patches with Fixes: tags.
+- Split the previous injection patch into patches 5-9, one change
+  each.
+- Only send injected control frames through the management path;
+  control frames built by mac80211 (e.g. BlockAckReq) keep using the
+  data path as before.
+- Drop rtw89_recalc_pure_monitor_vif(). mac80211 only adds the
+  virtual monitor vif while no other interface is open, and removes
+  it before a non-monitor interface is added, so the existing update
+  rules for pure_monitor_mode_vif already give the same result. Patch
+  4 is now a plain RCU conversion.
+- Reword commit messages: describe the observed firmware behaviour in
+  patch 5 instead of claims about firmware internals, and fix the
+  description of the NULL dereference.
+
+Changes in v4:
+- Use full legal name in From/Signed-off-by.
+- Retain FIF_CONTROL and FIF_PSPOLL and also clear B_AX_A_MC and
+  B_AX_A_MC_LIST_CAM_MATCH in monitor mode.
+- Split the RCU conversion of pure_monitor_mode_vif into its own
+  patch.
+- Handle injected control frames, negative rate indices, NO_ACK and
+  sequence number preservation.
+- Move monitor restart channel restoration into rtw89_ops_config().
+- Drop the inaccurate Fixes: tag from the channel restore patch.
+
+Changes in v3:
+- Split into a patch series.
+- Dropped direct register writes in favor of driver abstractions.
+- Added RCU synchronization around pure_monitor_mode_vif.
+
+v4: not sent to the list
+v3: https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/
+
+Enver Ikromov (10):
+  wifi: rtw89: avoid NULL vif dereference in rtw89_ops_tx()
+  wifi: rtw89: handle negative rate index for injected frames
+  wifi: rtw89: fix RX filter configuration for monitor mode
+  wifi: rtw89: protect pure_monitor_mode_vif with RCU
+  wifi: rtw89: use AP self role for monitor interfaces
+  wifi: rtw89: transmit frames from a standalone monitor interface
+  wifi: rtw89: send injected control frames through the management path
+  wifi: rtw89: skip host-side TX hooks for injected frames
+  wifi: rtw89: honor ASSIGN_SEQ and NO_ACK for injected frames
+  wifi: rtw89: restore channel after monitor restart on non-chanctx
+    chips
+
+ drivers/net/wireless/realtek/rtw89/core.c     | 69 ++++++++++++---
+ drivers/net/wireless/realtek/rtw89/core.h     |  2 +-
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 84 +++++++++++++++++--
+ 3 files changed, 135 insertions(+), 20 deletions(-)
+
+
+base-commit: d48723711bae9b8cdc56719c448ba42fef28cbee
+-- 
+2.56.0.windows.4
+

@@ -190,7 +190,7 @@ def main():
     parser.add_argument("--duration", type=float, default=12.0)
     parser.add_argument("--cycles", type=int, default=25)
     parser.add_argument("--settle", type=float, default=12.0)
-    parser.add_argument("--series", default="v4")
+    parser.add_argument("--series", default="v5")
     parser.add_argument("--keep-monitor", action="store_true")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()

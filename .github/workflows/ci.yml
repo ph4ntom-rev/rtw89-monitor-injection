@@ -6,20 +6,22 @@ on:
     branches: ["main", "master"]
   pull_request:
 
+env:
+  # Upstream commit the patch series is generated against (v7.4-rc1 merge window)
+  KERNEL_BASE: d48723711bae9b8cdc56719c448ba42fef28cbee
+
 jobs:
-  verify:
-    name: Patch Series, Integrator, Kbuild/Sparse & Clean-Room Verification
+  scripts:
+    name: Scripts and unit tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Check Python syntax
+      - name: Python syntax
         run: >-
           python3 -m py_compile
           scripts/patch_rtw89.py
@@ -27,58 +29,97 @@ jobs:
           scripts/verify_hardware.py
           tests/test_patch_rtw89.py
 
-      - name: Check shell script syntax
-        run: bash -n scripts/build_module.sh
+      - name: Shell syntax and shellcheck
+        run: |
+          bash -n scripts/build_module.sh
+          bash -n scripts/dkms_prepare.sh
+          sh -n scripts/dkms_pre_build.sh
+          shellcheck -S warning scripts/build_module.sh scripts/dkms_prepare.sh scripts/dkms_pre_build.sh
 
-      - name: Run Gen 1, Gen 2 & PATCH v4 unit tests
+      - name: Unit tests
         run: python3 -m unittest discover -s tests -v
 
-      - name: Verify PATCH v4 clean git-am & checkpatch.pl --strict against upstream base
+  kernel:
+    name: Kernel build (W=1, sparse) and checkpatch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Install build dependencies
         run: |
-          set -euo pipefail
-          BASE="d48723711bae9b8cdc56719c448ba42fef28cbee"
-          TMP="$(mktemp -d)"
-          mkdir -p "$TMP/drivers/net/wireless/realtek/rtw89" "$TMP/scripts"
-          for f in core.c core.h mac80211.c Makefile; do
-            curl -fsSL "https://raw.githubusercontent.com/torvalds/linux/${BASE}/drivers/net/wireless/realtek/rtw89/${f}" \
-              -o "$TMP/drivers/net/wireless/realtek/rtw89/${f}"
-          done
-          for s in checkpatch.pl spelling.txt const_structs.checkpatch; do
-            curl -fsSL "https://raw.githubusercontent.com/torvalds/linux/${BASE}/scripts/${s}" \
-              -o "$TMP/scripts/${s}"
-          done
-          chmod +x "$TMP/scripts/checkpatch.pl"
-
-          # 1. Test patch_rtw89.py apply + revert against real upstream rtw89 files
-          python3 scripts/patch_rtw89.py --rtw89-dir "$TMP/drivers/net/wireless/realtek/rtw89" --apply
-          python3 scripts/patch_rtw89.py --rtw89-dir "$TMP/drivers/net/wireless/realtek/rtw89" --revert
-
-          # 2. Test git am of PATCH v4 (1/4 .. 4/4) with zero fuzz
-          git -C "$TMP" init -q
-          git -C "$TMP" config user.name "CI"
-          git -C "$TMP" config user.email "ci@example.invalid"
-          git -C "$TMP" add drivers/net/wireless/realtek/rtw89
-          git -C "$TMP" commit -q -m "base"
-          git -C "$TMP" am "$GITHUB_WORKSPACE"/patches/v4/v4-000[1-4]-*.patch
-
-          # 3. Run Linux checkpatch.pl --strict
-          perl "$TMP/scripts/checkpatch.pl" --strict --no-tree \
-            "$GITHUB_WORKSPACE"/patches/v4/v4-000[1-4]-*.patch
-
-      - name: Verify Kbuild compilation (W=1 -Werror) and sparse (C=1) static analysis
-        run: |
-          set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends sparse "linux-headers-$(uname -r)"
-          KTAG="v$(uname -r | cut -d. -f1,2)"
-          KTMP="$(mktemp -d)"
-          git clone --depth 1 --filter=blob:none --no-checkout --branch "$KTAG" \
-            https://github.com/torvalds/linux.git "$KTMP"
-          git -C "$KTMP" sparse-checkout set drivers/net/wireless/realtek/rtw89
-          git -C "$KTMP" checkout -q
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev sparse
 
-          python3 scripts/patch_rtw89.py --rtw89-dir "$KTMP/drivers/net/wireless/realtek/rtw89" --apply
-          make -C "/lib/modules/$(uname -r)/build" \
-            M="$KTMP/drivers/net/wireless/realtek/rtw89" \
-            KCFLAGS="-Werror" W=1 C=1 -j"$(nproc)" \
-            core.o mac80211.o rtw89_mon.o
+      - name: Fetch upstream kernel at the series base
+        run: |
+          git init -q linux
+          git -C linux fetch -q --depth 1 https://github.com/torvalds/linux.git "$KERNEL_BASE"
+          git -C linux checkout -q FETCH_HEAD
+          git -C linux config user.name CI
+          git -C linux config user.email ci@example.invalid
+
+      - name: Configure and prepare
+        working-directory: linux
+        run: |
+          make -s defconfig
+          ./scripts/config -e CFG80211 -e MAC80211 -e WLAN -e WLAN_VENDOR_REALTEK \
+            -m RTW89 -m RTW89_8852AE -m RTW89_8852BE -m RTW89_8852CE -m RTW89_8851BE \
+            -m RTW89_8852BTE -m RTW89_8922AE -e RTW89_DEBUGMSG -e PROVE_LOCKING
+          make -s olddefconfig
+          make -s -j"$(nproc)" modules_prepare
+          cp -a drivers/net/wireless/realtek/rtw89 ../pristine-rtw89
+
+      - name: Baseline build
+        working-directory: linux
+        run: |
+          make -j"$(nproc)" KBUILD_MODPOST_WARN=1 W=1 C=1 \
+            M=drivers/net/wireless/realtek/rtw89 modules 2>&1 | tee ../base.log
+          grep -E 'warning:|error:' ../base.log | sed -E 's/:[0-9]+:[0-9]+:/:/' | sort > ../base.warn || true
+
+      - name: Apply PATCH v5 (git am) and check every patch builds
+        working-directory: linux
+        run: |
+          set -euo pipefail
+          mapfile -t series < <(ls ../repo/patches/v5/v5-00*-wifi-*.patch | sort)
+          for p in "${series[@]}"; do
+            git am -q "$p"
+            make -s -j"$(nproc)" KBUILD_MODPOST_WARN=1 \
+              M=drivers/net/wireless/realtek/rtw89 modules
+            echo "OK: $(basename "$p")"
+          done
+
+      - name: W=1 / sparse warnings must not increase
+        working-directory: linux
+        run: |
+          touch drivers/net/wireless/realtek/rtw89/*.c
+          make -j"$(nproc)" KBUILD_MODPOST_WARN=1 W=1 C=1 \
+            M=drivers/net/wireless/realtek/rtw89 modules 2>&1 | tee ../v5.log
+          grep -E 'warning:|error:' ../v5.log | sed -E 's/:[0-9]+:[0-9]+:/:/' | sort > ../v5.warn || true
+          if comm -13 ../base.warn ../v5.warn | grep .; then
+            echo "::error::PATCH v5 introduces new compiler or sparse warnings"
+            exit 1
+          fi
+
+      - name: checkpatch.pl --strict
+        working-directory: linux
+        run: |
+          # UNKNOWN_COMMIT_ID: the ids in Fixes: tags cannot be resolved in a shallow clone
+          ./scripts/checkpatch.pl --strict --no-tree --ignore UNKNOWN_COMMIT_ID \
+            ../repo/patches/v5/v5-00*-wifi-*.patch
+
+      - name: Out-of-tree integrator builds against the same kernel
+        run: |
+          set -euo pipefail
+          rm -rf oot && cp -a pristine-rtw89 oot
+          python3 repo/scripts/patch_rtw89.py --rtw89-dir oot --apply
+          make -C linux -j"$(nproc)" KBUILD_MODPOST_WARN=1 W=1 C=1 M="$PWD/oot" modules 2>&1 | tee oot.log
+          if grep -E 'warning:|error:' oot.log; then
+            echo "::error::integrator build has warnings"
+            exit 1
+          fi
+          python3 repo/scripts/patch_rtw89.py --rtw89-dir oot --revert
+          diff -r oot pristine-rtw89 --exclude='*.o' --exclude='*.ko' \
+            --exclude='*.mod*' --exclude='.*' --exclude='modules.order' --exclude='Module.symvers'

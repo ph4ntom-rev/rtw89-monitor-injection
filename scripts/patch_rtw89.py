@@ -4,14 +4,14 @@
 patch_rtw89.py
 
 Automated cross-kernel source integrator for rtw89 monitor mode, standalone
-raw frame injection, and monitor restart channel restoration (matching PATCH v4).
+raw frame injection, and monitor restart channel restoration (PATCH v5, best effort).
 
 Supported kernel driver generations:
   - API Gen 1: Linux 6.1 - 6.10 (legacy struct rtw89_vif, rtwdev->mutex)
   - API Gen 2: Linux 6.11 - 7.x+ (MLO struct rtw89_vif_link, pure_monitor_mode_vif, wiphy_lock)
 
 Note: For mainline Linux 7.2+ / wireless-next trees, prefer applying the
-upstream patch series in patches/v4/ directly via `git am patches/v4/v4-000[1-4]*.patch`.
+upstream patch series in patches/v5/ directly via `git am patches/v5/v5-00*-wifi-*.patch`.
 """
 
 import argparse
@@ -185,19 +185,27 @@ def patch_core_c(core_c_path: Path, pure_mon_rcu: bool) -> list:
                 src = src[:span_rfk[1]] + body + src[span_rfk[2]:]
                 notes.append("updated rtw89_chip_rfk_channel_for_pure_mon_vif() RCU dereference")
 
-    # 1. rtw89_core_get_tx_type -> route all non-Data (including 10-16B Control) frames via MGMT
+    # 1. rtw89_core_get_tx_type -> route injected non-Data (e.g. 10-16B Control) frames via MGMT.
+    #    Control frames built by mac80211 itself (e.g. BlockAckReq) keep the upstream data path.
     span_tx_type = find_c_function_span(src, "rtw89_core_get_tx_type")
     if span_tx_type:
         body = src[span_tx_type[1]:span_tx_type[2]]
-        old_cond = "if (ieee80211_is_mgmt(fc) || ieee80211_is_any_nullfunc(fc))"
+        old_cond = (
+            "\tif (ieee80211_is_mgmt(fc) || ieee80211_is_any_nullfunc(fc))\n"
+            "\t\treturn RTW89_CORE_TX_TYPE_MGMT;\n"
+        )
         if old_cond in body:
             body = body.replace(
                 old_cond,
-                "if (!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc))",
+                old_cond
+                + "\n"
+                "\tif (unlikely(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED) &&\n"
+                "\t    !ieee80211_is_data(fc))\n"
+                "\t\treturn RTW89_CORE_TX_TYPE_MGMT;\n",
                 1,
             )
             src = src[:span_tx_type[1]] + body + src[span_tx_type[2]:]
-            notes.append("updated rtw89_core_get_tx_type() for Control frames")
+            notes.append("updated rtw89_core_get_tx_type() for injected Control frames")
 
     # 2. rtw89_core_tx_update_injection -> fix unsigned u8 idx = -1 (0xff) corruption if present
     span_inj = find_c_function_span(src, "rtw89_core_tx_update_injection")

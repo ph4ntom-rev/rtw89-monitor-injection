@@ -1,4 +1,4 @@
-From bfb14e92ad1f97057c5c2590c7da82c4740a43b4 Mon Sep 17 00:00:00 2001
+From d3773d58d0456c849e1223d30ff8ec1b0a359615 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:09:00 +0500
 Subject: [PATCH v5 09/10] wifi: rtw89: honor ASSIGN_SEQ and NO_ACK for
@@ -14,40 +14,51 @@ with the radiotap flags:
   enabled even on injected control frames that have no seq_ctrl field.
   Conversely, injected data frames leave hw_seq_mode unset when
   ASSIGN_SEQ is requested on a standalone monitor interface.
-- Unicast frames unconditionally enable RTS_EN in txwd_info4 even when
-  neither IEEE80211_TX_RC_USE_RTS_CTS nor an ACK is expected.
+- Unicast frames unconditionally set RTS_EN = 1 and HW_RTS_EN = 1 in
+  txwd_info4. On normal traffic HW_RTS_EN = 1 gates RTS on the MAC
+  length/duration threshold (4080B / 2816us), whereas for injected
+  frames RTS_EN must follow IEEE80211_TX_RC_USE_RTS_CTS with
+  HW_RTS_EN = 0 so short frames requesting RTS/CTS actually emit RTS.
 - IEEE80211_TX_CTL_NO_ACK (e.g. IEEE80211_RADIOTAP_F_TX_NOACK) neither
   sets BE_TXD_BODY6_NO_ACK on Wi-Fi 7 descriptors nor bounds retries,
   causing unacknowledged frames to be retransmitted up to the retry
-  limit.
+  limit. Note that Wi-Fi 6 TXWD v0 chips (RTL8852A/B, RTL8851B) have
+  no dedicated per-packet NO_ACK descriptor bit and rely on
+  tx_cnt_lmt = 1 to suppress retransmissions, whereas Wi-Fi 7 (BE)
+  additionally sets BE_TXD_BODY6_NO_ACK to skip ACK timeout waiting.
+- Positive radiotap HT/VHT/legacy rate indices are added to the table
+  base without clamping to the chip's valid MCS or legacy rate bounds.
 
 Configure hardware sequence assignment according to
-IEEE80211_TX_CTL_ASSIGN_SEQ (and never on control frames), gate RTS_EN
-for injected frames on IEEE80211_TX_RC_USE_RTS_CTS without NO_ACK, and
-set BE_TXD_BODY6_NO_ACK with a single transmission attempt when
-IEEE80211_TX_CTL_NO_ACK is set.
+IEEE80211_TX_CTL_ASSIGN_SEQ (and never on control frames), drive
+rts_en and hw_rts_en so radiotap RTS/CTS is honored unconditionally on
+unicast Ack-bearing frames, set BE_TXD_BODY6_NO_ACK with a single
+transmission attempt when IEEE80211_TX_CTL_NO_ACK is set, and clamp
+positive radiotap rate indices to valid hardware ranges.
 
 Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---
- drivers/net/wireless/realtek/rtw89/core.c | 34 +++++++++++++++++++----
- drivers/net/wireless/realtek/rtw89/core.h |  2 ++
- 2 files changed, 31 insertions(+), 5 deletions(-)
+ drivers/net/wireless/realtek/rtw89/core.c | 56 +++++++++++++++++------
+ drivers/net/wireless/realtek/rtw89/core.h |  3 ++
+ 2 files changed, 46 insertions(+), 13 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index eea0f0e..93145fc 100644
+index c4c431aa0..751102c2e 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
-@@ -1252,12 +1252,36 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
+@@ -1252,12 +1252,37 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
  	const struct rtw89_hw_rate_def *hw_rate = &rtw89_hw_rate[rtwdev->chip->chip_gen];
  	enum mac80211_rate_control_flags flags = info->control.rates[0].flags;
  	struct rtw89_tx_desc_info *desc_info = &tx_req->desc_info;
 +	struct ieee80211_hdr *hdr = (void *)tx_req->skb->data;
  	const struct rtw89_chan *chan;
  	s8 idx = info->control.rates[0].idx;
- 	u8 nss, mcs;
+-	u8 nss, mcs;
++	u8 nss, mcs, max_mcs;
  
  	desc_info->use_rate = true;
  	desc_info->dis_data_fb = true;
++	desc_info->hw_rts_en = false;
 +	desc_info->rts_en = (flags & IEEE80211_TX_RC_USE_RTS_CTS) &&
 +			    !desc_info->is_bmc &&
 +			    !(info->flags & IEEE80211_TX_CTL_NO_ACK);
@@ -65,7 +76,7 @@ index eea0f0e..93145fc 100644
 +		desc_info->hw_seq_mode = RTW89_MGMT_HW_SEQ_MODE;
 +	}
 +
-+	/* Do not wait for ACK or retry when NO_ACK is requested */
++	/* Suppress hardware retransmissions (and ACK waiting on BE) for NO_ACK */
 +	if (info->flags & IEEE80211_TX_CTL_NO_ACK) {
 +		desc_info->no_ack = true;
 +		desc_info->tx_cnt_lmt_en = true;
@@ -74,25 +85,54 @@ index eea0f0e..93145fc 100644
  
  	/* No rate was given in the radiotap header. Management frames
  	 * already carry the rate from rtw89_core_tx_update_mgmt_info(), so
-@@ -1341,6 +1365,7 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,
+@@ -1283,16 +1308,20 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
+ 		desc_info->gi_ltf = 1;
+ 
+ 	if (flags & IEEE80211_TX_RC_VHT_MCS) {
++		max_mcs = rtwdev->chip->chip_gen == RTW89_CHIP_BE ? 11 : 9;
+ 		nss = umin(idx >> 4, ARRAY_SIZE(hw_rate->vht) - 1);
+-		mcs = idx & 0xf;
++		mcs = umin(idx & 0xf, max_mcs);
+ 		desc_info->data_rate = hw_rate->vht[nss] + mcs;
+ 	} else if (flags & IEEE80211_TX_RC_MCS) {
+-		desc_info->data_rate = hw_rate->ht + idx;
++		desc_info->data_rate = hw_rate->ht + umin(idx, 31);
+ 	} else {
+ 		chan = rtw89_chan_get(rtwdev, tx_req->rtwvif_link->chanctx_idx);
+-
+-		desc_info->data_rate = idx + (chan->band_type == RTW89_BAND_2G ?
+-					      RTW89_HW_RATE_CCK1 : RTW89_HW_RATE_OFDM6);
++		if (chan->band_type == RTW89_BAND_2G)
++			desc_info->data_rate = RTW89_HW_RATE_CCK1 +
++					       umin(idx, 11);
++		else
++			desc_info->data_rate = RTW89_HW_RATE_OFDM6 +
++					       umin(idx, 7);
+ 	}
+ }
+ 
+@@ -1341,6 +1370,8 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,
  
  	desc_info->seq = seq;
  	desc_info->is_bmc = is_bmc;
 +	desc_info->rts_en = !is_bmc;
++	desc_info->hw_rts_en = true;
  	desc_info->wd_page = true;
  	desc_info->hiq = info->flags & IEEE80211_TX_CTL_SEND_AFTER_DTIM;
  	desc_info->upd_wlan_hdr = upd_wlan_hdr;
-@@ -1668,8 +1693,7 @@ static __le32 rtw89_build_txwd_info3(struct rtw89_tx_desc_info *desc_info)
+@@ -1676,9 +1707,8 @@ static __le32 rtw89_build_txwd_info3(struct rtw89_tx_desc_info *desc_info)
  
  static __le32 rtw89_build_txwd_info4(struct rtw89_tx_desc_info *desc_info)
  {
 -	bool rts_en = !desc_info->is_bmc;
 -	u32 dword = FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, rts_en) |
+-		    FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, 1) |
 +	u32 dword = FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, desc_info->rts_en) |
- 		    FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, 1) |
++		    FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, desc_info->hw_rts_en) |
  		    FIELD_PREP(RTW89_TXWD_INFO4_SW_DEFINE, desc_info->sn);
  
-@@ -1811,7 +1835,8 @@ static __le32 rtw89_build_txwd_body5_v2(struct rtw89_tx_desc_info *desc_info)
+ 	return cpu_to_le32(dword);
+@@ -1819,7 +1849,8 @@ static __le32 rtw89_build_txwd_body5_v2(struct rtw89_tx_desc_info *desc_info)
  
  static __le32 rtw89_build_txwd_body6_v2(struct rtw89_tx_desc_info *desc_info)
  {
@@ -102,26 +142,29 @@ index eea0f0e..93145fc 100644
  
  	return cpu_to_le32(dword);
  }
-@@ -1873,8 +1898,7 @@ static __le32 rtw89_build_txwd_info2_v3(struct rtw89_tx_desc_info *desc_info)
+@@ -1881,9 +1912,8 @@ static __le32 rtw89_build_txwd_info2_v3(struct rtw89_tx_desc_info *desc_info)
  
  static __le32 rtw89_build_txwd_info4_v2(struct rtw89_tx_desc_info *desc_info)
  {
 -	bool rts_en = !desc_info->is_bmc;
 -	u32 dword = FIELD_PREP(BE_TXD_INFO4_RTS_EN, rts_en) |
+-		    FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, 1);
 +	u32 dword = FIELD_PREP(BE_TXD_INFO4_RTS_EN, desc_info->rts_en) |
- 		    FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, 1);
++		    FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, desc_info->hw_rts_en);
  
  	return cpu_to_le32(dword);
+ }
 diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
-index d7f3039..2e8863b 100644
+index d7f30394c..579051c81 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.h
 +++ b/drivers/net/wireless/realtek/rtw89/core.h
-@@ -1300,6 +1300,8 @@ struct rtw89_tx_desc_info {
+@@ -1300,6 +1300,9 @@ struct rtw89_tx_desc_info {
  	bool stbc;
  	bool ldpc;
  	bool upd_wlan_hdr;
 +	bool no_ack;
 +	bool rts_en;
++	bool hw_rts_en;
  	bool mlo;
  	bool sw_mld;
  };

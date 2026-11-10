@@ -1,4 +1,4 @@
-From f0fbb1fedaed68be9d1134996cf2497233ecfd0e Mon Sep 17 00:00:00 2001
+From 678a4e051b3bd0d3787d2f87f1bd29b277d865b5 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:10:00 +0500
 Subject: [PATCH v5 10/10] wifi: rtw89: restore channel after monitor restart
@@ -34,10 +34,10 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 11 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index 771e8c9..c022961 100644
+index e5b89e6d8..17a19b614 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
-@@ -134,9 +134,19 @@ static int rtw89_ops_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
+@@ -121,9 +121,19 @@ static int rtw89_ops_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
  	    !rtwdev->scanning)
  		rtw89_enter_ips(rtwdev);
  

@@ -8,7 +8,7 @@
 #
 # Usage:
 #   scripts/dkms_prepare.sh --source /usr/src/linux-source-7.3.tar.xz
-#   scripts/dkms_prepare.sh --source /path/to/linux-tree
+#   scripts/dkms_prepare.sh --source /path/to/linux-tree [--kconfig /path/to/.config]
 #   scripts/dkms_prepare.sh --remove
 
 set -euo pipefail
@@ -17,7 +17,7 @@ PKG="rtw89-monitor-injection"
 VER="5.0"
 DEST="${RTW89_DKMS_DEST:-/usr/src/${PKG}-${VER}}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KCONFIG="${RTW89_KCONFIG:-/lib/modules/$(uname -r)/build/.config}"
+KCONFIG="${RTW89_KCONFIG:-}"
 
 die() { echo "[ERROR] $*" >&2; exit 1; }
 
@@ -30,6 +30,7 @@ REMOVE=0
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--source) SRC="${2:?--source needs an argument}"; shift 2 ;;
+	--kconfig) KCONFIG="${2:?--kconfig needs an argument}"; shift 2 ;;
 	--remove) REMOVE=1; shift ;;
 	-h|--help) usage; exit 0 ;;
 	*) usage; die "unknown argument: $1" ;;
@@ -46,7 +47,6 @@ if [[ ${REMOVE} -eq 1 ]]; then
 fi
 
 [[ -n "${SRC}" ]] || { usage; die "--source is required"; }
-[[ -f "${KCONFIG}" ]] || die "missing ${KCONFIG}; install the kernel headers"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
@@ -72,6 +72,26 @@ if [[ "${series}" != "${running}" ]]; then
 	echo "[WARN] rtw89 sources are from Linux ${series}, running kernel is $(uname -r)."
 	echo "       DKMS will only build for ${series}.x kernels."
 fi
+
+if [[ -z "${KCONFIG}" ]]; then
+	if [[ "${series}" == "${running}" && -f "/lib/modules/$(uname -r)/build/.config" ]]; then
+		KCONFIG="/lib/modules/$(uname -r)/build/.config"
+	elif [[ "${series}" == "${running}" && -f "/boot/config-$(uname -r)" ]]; then
+		KCONFIG="/boot/config-$(uname -r)"
+	else
+		for cand in \
+			/lib/modules/"${series}".*/build/.config \
+			/lib/modules/"${series}"-*/build/.config \
+			/boot/config-"${series}".* \
+			/boot/config-"${series}"-*; do
+			if [[ -f "${cand}" ]]; then
+				KCONFIG="${cand}"
+			fi
+		done
+	fi
+fi
+
+[[ -n "${KCONFIG}" && -f "${KCONFIG}" ]] || die "missing kernel .config for Linux ${series} (install linux-headers for ${series}.x or pass --kconfig / RTW89_KCONFIG)"
 
 # Modules to install: every rtw89 module in the source Makefile that is
 # enabled as a module in the kernel configuration.

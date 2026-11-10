@@ -63,6 +63,51 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def resolve_firmware_path(dmesg_text, iface, fw_roots=None):
+    if fw_roots is None:
+        fw_roots = [pathlib.Path("/lib/firmware"), pathlib.Path("/usr/lib/firmware")]
+    suffixes = ("", ".zst", ".xz", ".gz")
+
+    fw_matches = re.findall(r"loaded firmware (rtw89/\S+\.bin)", dmesg_text)
+    if fw_matches:
+        rel = fw_matches[-1]
+        for root in fw_roots:
+            for sfx in suffixes:
+                cand = root / f"{rel}{sfx}"
+                if cand.is_file():
+                    return cand
+
+    chip_prefixes = []
+    drv_link = pathlib.Path(f"/sys/class/net/{iface}/device/driver")
+    if drv_link.exists():
+        m = re.match(r"rtw(?:89)?_(\d{4}[a-z]+?)(?:[eu])?$", drv_link.resolve().name)
+        if m:
+            chip_prefixes.append(f"rtw{m.group(1)}")
+    chip_prefixes.extend(["rtw8852a", "rtw8852b", "rtw8852bt", "rtw8852c", "rtw8851b", "rtw8922a"])
+
+    seen = set()
+    for prefix in chip_prefixes:
+        if prefix in seen:
+            continue
+        seen.add(prefix)
+        for root in fw_roots:
+            rtw_dir = root / "rtw89"
+            if not rtw_dir.is_dir():
+                continue
+            def _fw_sort_key(path):
+                rev_m = re.search(r"_fw-(\d+)\.bin", path.name)
+                return (int(rev_m.group(1)) if rev_m else 0, path.name)
+
+            matches = sorted(
+                (p for p in rtw_dir.glob(f"{prefix}_fw*.bin*") if p.is_file()),
+                key=_fw_sort_key,
+                reverse=True,
+            )
+            if matches:
+                return matches[0]
+    return None
+
+
 def parse_aireplay(output):
     access_points = []
     for match in AIREPLAY_AP_RE.finditer(output.replace("\r", "\n")):
@@ -250,16 +295,9 @@ def main():
             "pci": pci_info,
             "kernel_taint": pathlib.Path("/proc/sys/kernel/tainted").read_text().strip(),
         }
-        fw_matches = re.findall(r"loaded firmware (rtw89/\S+\.bin)", dmesg_before)
-        firmware = (
-            pathlib.Path("/lib/firmware") / fw_matches[-1]
-            if fw_matches
-            else pathlib.Path("/lib/firmware/rtw89/rtw8852a_fw.bin")
-        )
-        if not firmware.exists():
-            firmware = pathlib.Path("/lib/firmware/rtw89/rtw8852a_fw.bin")
+        firmware = resolve_firmware_path(dmesg_before, args.iface)
         module = pathlib.Path(f"/lib/modules/{os.uname().release}/updates/rtw89/rtw89_core.ko")
-        if firmware.exists():
+        if firmware is not None and firmware.exists():
             environment["firmware_file"] = str(firmware)
             environment["firmware_sha256"] = sha256_file(firmware)
         if module.exists():

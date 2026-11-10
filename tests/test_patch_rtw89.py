@@ -7,16 +7,22 @@ Run with:
 """
 
 import importlib.util
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PATCHER_PATH = REPO_ROOT / "scripts" / "patch_rtw89.py"
+VERIFY_HW_PATH = REPO_ROOT / "scripts" / "verify_hardware.py"
 
 spec = importlib.util.spec_from_file_location("patch_rtw89", PATCHER_PATH)
 patch_rtw89 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(patch_rtw89)
+
+vh_spec = importlib.util.spec_from_file_location("verify_hardware", VERIFY_HW_PATH)
+verify_hardware = importlib.util.module_from_spec(vh_spec)
+vh_spec.loader.exec_module(verify_hardware)
 
 
 GEN1_CORE_H = """\
@@ -477,6 +483,8 @@ class PatchRtw89TestCase(unittest.TestCase):
             "struct rtw89_tx_desc_info {\n"
             "\tu16 pkt_size;\n"
             "\tbool is_bmc;\n"
+            "\tbool tx_cnt_lmt_en;\n"
+            "\tu8 tx_cnt_lmt: 6;\n"
             "};\n"
             "struct rtw89_vif_link {\n"
             "\tu8 mac_id;\n"
@@ -550,6 +558,7 @@ class PatchRtw89TestCase(unittest.TestCase):
             self.assertIn("#define RTW89_MON_TX_INJ_SAFE 1", autoconf)
 
             patched_core = (tree / "core.c").read_text(encoding="utf-8")
+            self.assertEqual(len(re.findall(r"\btx_cnt_lmt\b", (tree / "core.h").read_text(encoding="utf-8"))), 1)
             self.assertIn("bool rts_en = !desc_info->is_bmc && !desc_info->dis_rts;", patched_core)
             self.assertIn("FIELD_PREP(BE_TXD_BODY6_NO_ACK, desc_info->no_ack)", patched_core)
             self.assertIn("rtw89_core_txq_check_agg", patched_core)
@@ -640,8 +649,16 @@ class PatchRtw89TestCase(unittest.TestCase):
         self.assertIn("rtw89_recalc_pure_monitor_vif", body(4))
         self.assertIn("synchronize_rcu()", body(4))
 
-        # 6/10 and 7/10 use skb_headlen(skb) and only reroute injected control frames
-        self.assertIn("skb_headlen(skb)", body(6))
+        # 5/10 documents exact firmware JoinInfo disconnect deactivation and CCTL_ResetByMacid
+        p5 = body(5)
+        self.assertNotIn("fails role lookup", p5)
+        self.assertIn("HAL8852A_Role_Disconnect", p5)
+        self.assertIn("CCTL_ResetByMacid", p5)
+
+        # 6/10 and 7/10 centralize skb_headlen(skb) in rtw89_core_tx_write_link() and reroute injected control frames
+        p6 = body(6)
+        self.assertIn("skb_headlen(skb)", p6)
+        self.assertIn("return -EINVAL;", p6)
         p7 = body(7)
         self.assertIn("skb_headlen(skb)", p7)
         self.assertIn("IEEE80211_TX_CTL_INJECTED) &&", p7)
@@ -650,11 +667,14 @@ class PatchRtw89TestCase(unittest.TestCase):
         # 8/10 guards TXQ aggregation, stats, WoW AKM, and BTC hooks on injected frames
         self.assertIn("rtw89_core_txq_check_agg", body(8))
 
-        # 9/10 guards control frames against hw_seq_mode, gates RTS, and sets BE_TXD_BODY6_NO_ACK
+        # 9/10 guards control frames against hw_seq_mode, gates RTS & HW_RTS, clamps idx/mcs, and sets BE_TXD_BODY6_NO_ACK
         p9 = body(9)
         self.assertIn("ieee80211_is_ctl(hdr->frame_control)", p9)
         self.assertIn("IEEE80211_TX_RC_USE_RTS_CTS", p9)
+        self.assertIn("desc_info->hw_rts_en", p9)
+        self.assertIn("umin(", p9)
         self.assertIn("BE_TXD_BODY6_NO_ACK", p9)
+        self.assertIn("TXWD v0", p9)
 
         # 10/10 gates channel restoration on !rtwdev->ops->assign_vif_chanctx
         p10_diff = body(10).split("\ndiff --git ", 1)[1]
@@ -670,6 +690,128 @@ class PatchRtw89TestCase(unittest.TestCase):
             self.assertNotIn("\r\n", content, f"CRLF line endings in {p.name}")
             diff_body = content.split("\ndiff --git ", 1)[1]
             self.assertNotIn("rtw89_fw_h2c_join_info", diff_body)
+
+    def test_cross_kernel_feature_flags_and_dbcc_rx_filter_placement(self):
+        self.assertFalse(hasattr(patch_rtw89, "patch_txrx_h"))
+
+        # v6.18-like tree: Gen 2 (rtw89_vif_link), wiphy_lock, RTW89_CHIP_BE + V1 rates,
+        # no rtw89_mac_set_rx_fltr(), configure_filter returns early when !rtwdev->dbcc_en.
+        v618_core_h = (
+            "#ifndef __RTW89_CORE_H__\n"
+            "#define __RTW89_CORE_H__\n"
+            "enum rtw89_chip_gen { RTW89_CHIP_AX, RTW89_CHIP_BE };\n"
+            "#define RTW89_HW_RATE_V1_MCS0 0x100\n"
+            "#define RTW89_HW_RATE_V1_VHT_NSS1_MCS0 0x200\n"
+            "#define RTW89_CHANCTX_0 0\n"
+            "struct rtw89_tx_desc_info {\n"
+            "\tu16 pkt_size;\n"
+            "\tbool is_bmc;\n"
+            "\tbool upd_wlan_hdr;\n"
+            "};\n"
+            "struct rtw89_vif_link { u8 mac_id; };\n"
+            "struct rtw89_dev {\n"
+            "\tconst struct ieee80211_ops *ops;\n"
+            "};\n"
+            "u8 rtw89_chip_get_ch_dma(struct rtw89_dev *rtwdev, u8 qsel);\n"
+            "#endif\n"
+        )
+        v618_chan_h = "static inline bool rtw89_get_entity_state(struct rtw89_dev *rtwdev, u8 idx) { return false; }\n"
+        v618_mac_h = "struct rtw89_mac_gen_def { u32 rx_fltr; };\n"
+        v618_core_c = (
+            GEN2_CORE_C
+            + "\nstatic __le32 rtw89_build_txwd_info4(struct rtw89_tx_desc_info *desc_info)\n"
+            "{\n"
+            "\tbool rts_en = !desc_info->is_bmc;\n\n"
+            "\treturn cpu_to_le32(FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, rts_en) |\n"
+            "\t\t\t   FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, 1));\n"
+            "}\n\n"
+            "static __le32 rtw89_build_txwd_info4_v2(struct rtw89_tx_desc_info *desc_info)\n"
+            "{\n"
+            "\tbool rts_en = !desc_info->is_bmc;\n\n"
+            "\treturn cpu_to_le32(FIELD_PREP(BE_TXD_INFO4_RTS_EN, rts_en) |\n"
+            "\t\t\t   FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, 1));\n"
+            "}\n"
+        )
+        v618_mac80211_c = GEN2_MAC80211_C.replace(
+            "\trtw89_mac_set_rx_fltr(rtwdev, RTW89_MAC_0, rx_fltr);\n"
+            "\tif (!rtwdev->dbcc_en)\n"
+            "\t\treturn;\n"
+            "\trtw89_mac_set_rx_fltr(rtwdev, RTW89_MAC_1, rx_fltr);\n",
+            "\trtw89_write32_mask(rtwdev, rtw89_mac_reg_by_idx(rtwdev, mac->rx_fltr, RTW89_MAC_0),\n"
+            "\t\t\t   B_AX_RX_FLTR_CFG_MASK, rx_fltr);\n"
+            "\tif (!rtwdev->dbcc_en)\n"
+            "\t\treturn;\n"
+            "\trtw89_write32_mask(rtwdev, rtw89_mac_reg_by_idx(rtwdev, mac->rx_fltr, RTW89_MAC_1),\n"
+            "\t\t\t   B_AX_RX_FLTR_CFG_MASK, rx_fltr);\n",
+        )
+        v618_fw_c = (
+            '// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause\n'
+            '#include "core.h"\n\n'
+            "void rtw89_hw_scan_complete_cb(struct rtw89_dev *rtwdev)\n"
+            "{\n"
+            "\trtw89_write32_mask(rtwdev, 0xce20, B_AX_RX_FLTR_CFG_MASK,\n"
+            "\t\t\t   rtwdev->hal.rx_fltr);\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / "core.h").write_text(v618_core_h, encoding="utf-8", newline="\n")
+            (tree / "chan.h").write_text(v618_chan_h, encoding="utf-8", newline="\n")
+            (tree / "mac.h").write_text(v618_mac_h, encoding="utf-8", newline="\n")
+            (tree / "Makefile").write_text(GEN1_MAKEFILE, encoding="utf-8", newline="\n")
+            (tree / "core.c").write_text(v618_core_c, encoding="utf-8", newline="\n")
+            (tree / "mac80211.c").write_text(v618_mac80211_c, encoding="utf-8", newline="\n")
+            (tree / "fw.c").write_text(v618_fw_c, encoding="utf-8", newline="\n")
+
+            patch_rtw89.apply_tree(tree)
+            autoconf = (tree / "rtw89_mon_autoconf.h").read_text(encoding="utf-8")
+            self.assertIn("#define RTW89_MON_API_GEN 2", autoconf)
+            self.assertIn("#define RTW89_MON_USES_WIPHY_LOCK 1", autoconf)
+            self.assertIn("#define RTW89_MON_HAS_SET_RX_FLTR 0", autoconf)
+            self.assertIn("#define RTW89_MON_HAS_MAC_DEF_RX_FLTR 1", autoconf)
+            self.assertIn("#define RTW89_MON_ENTITY_STATE_2ARGS 1", autoconf)
+            self.assertIn("#define RTW89_MON_HAS_CHANCTX_0 1", autoconf)
+            self.assertIn("#define RTW89_MON_HAS_CHIP_GET_CH_DMA 1", autoconf)
+            self.assertIn("#define RTW89_MON_HAS_CHIP_BE 1", autoconf)
+            self.assertIn("#define RTW89_MON_HAS_UPD_WLAN_HDR 1", autoconf)
+
+            patched_mac80211 = (tree / "mac80211.c").read_text(encoding="utf-8")
+            self.assertLess(
+                patched_mac80211.index("rtw89_mon_prepare_rx_filter"),
+                patched_mac80211.index("if (!rtwdev->dbcc_en)"),
+            )
+            patched_core = (tree / "core.c").read_text(encoding="utf-8")
+            self.assertIn("FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, !desc_info->dis_hw_rts)", patched_core)
+            self.assertIn("FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, !desc_info->dis_hw_rts)", patched_core)
+            self.assertIn("rtw89_mon_refine_rx_fltr(rtwdev->hal.rx_fltr)", (tree / "fw.c").read_text(encoding="utf-8"))
+
+            patch_rtw89.revert_tree(tree)
+            self.assertEqual((tree / "fw.c").read_text(encoding="utf-8"), v618_fw_c)
+            self.assertEqual((tree / "mac80211.c").read_text(encoding="utf-8"), v618_mac80211_c)
+
+    def test_verify_hardware_resolve_firmware_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fw_root = Path(tmp) / "firmware"
+            rtw_dir = fw_root / "rtw89"
+            rtw_dir.mkdir(parents=True)
+            old_fw = rtw_dir / "rtw8852a_fw.bin.zst"
+            old_fw.write_bytes(b"legacy-fw-stub")
+            zst_fw = rtw_dir / "rtw8852a_fw-1.bin.zst"
+            zst_fw.write_bytes(b"compressed-fw-stub")
+
+            found_from_dmesg = verify_hardware.resolve_firmware_path(
+                "[   12.345] rtw89_8852ae 0000:03:00.0: loaded firmware rtw89/rtw8852a_fw-1.bin",
+                "wlan_nonexistent",
+                fw_roots=[fw_root],
+            )
+            self.assertEqual(found_from_dmesg, zst_fw)
+
+            found_rotated = verify_hardware.resolve_firmware_path(
+                "",
+                "wlan_nonexistent",
+                fw_roots=[fw_root],
+            )
+            self.assertEqual(found_rotated, zst_fw)
 
     def test_repository_contains_no_forbidden_artifacts(self):
         forbidden_suffixes = {".bin", ".fw", ".rom", ".img", ".i64", ".idb", ".ko", ".pcap", ".pcapng"}

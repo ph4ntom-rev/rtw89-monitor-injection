@@ -1,4 +1,4 @@
-From 654cb7dde84b3a919b5a5649bd511a8d02faeed1 Mon Sep 17 00:00:00 2001
+From 207d34e41b377e9078de757c51e9aee777c917a4 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:07:00 +0500
 Subject: [PATCH v5 07/10] wifi: rtw89: send injected control frames through
@@ -25,7 +25,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 14 insertions(+), 2 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index e82285a..c14e97c 100644
+index 4606638b4..42823857d 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -637,12 +637,21 @@ static enum rtw89_core_tx_type

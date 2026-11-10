@@ -1,4 +1,4 @@
-From fc9d02ecb6d074e8f01b3240450226b62e0899e2 Mon Sep 17 00:00:00 2001
+From 90e0ba0ae8ff959dbd33fd090ede10cc01e49afb Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:03:00 +0500
 Subject: [PATCH v5 03/10] wifi: rtw89: fix RX filter configuration for monitor
@@ -41,7 +41,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  4 files changed, 20 insertions(+), 3 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/mac.c b/drivers/net/wireless/realtek/rtw89/mac.c
-index de8598b..470d9e3 100644
+index de8598ba4..470d9e353 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac.c
 @@ -2681,6 +2681,7 @@ void rtw89_mac_set_rx_fltr(struct rtw89_dev *rtwdev, u8 mac_idx, u32 rx_fltr)
@@ -62,7 +62,7 @@ index de8598b..470d9e3 100644
  		    B_AX_LSIG_PARITY_CHK_EN | B_AX_SIGA_CRC_CHK |
  		    B_AX_VHT_SU_SIGB_CRC_CHK | B_AX_VHT_MU_SIGB_CRC_CHK |
 diff --git a/drivers/net/wireless/realtek/rtw89/mac.h b/drivers/net/wireless/realtek/rtw89/mac.h
-index 8419bcd..99844b0 100644
+index 8419bcd39..99844b012 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac.h
 +++ b/drivers/net/wireless/realtek/rtw89/mac.h
 @@ -1493,6 +1493,21 @@ void rtw89_mac_set_edcca_mode_bands(struct rtw89_dev *rtwdev, bool normal)
@@ -88,7 +88,7 @@ index 8419bcd..99844b0 100644
  void rtw89_mac_update_rts_threshold(struct rtw89_dev *rtwdev);
  void rtw89_mac_flush_txq(struct rtw89_dev *rtwdev, u32 queues, bool drop);
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index 87f5377..e32c2db 100644
+index 87f537760..e32c2db2d 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
 @@ -325,7 +325,8 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
@@ -102,7 +102,7 @@ index 87f5377..e32c2db 100644
  	if (changed_flags & FIF_ALLMULTI) {
  		if (*new_flags & FIF_ALLMULTI)
 diff --git a/drivers/net/wireless/realtek/rtw89/mac_be.c b/drivers/net/wireless/realtek/rtw89/mac_be.c
-index fa35caf..e68431b 100644
+index fa35cafd7..e68431b6e 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac_be.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac_be.c
 @@ -1328,7 +1328,7 @@ static int rx_fltr_init_be(struct rtw89_dev *rtwdev, u8 mac_idx)

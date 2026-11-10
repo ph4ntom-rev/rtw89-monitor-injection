@@ -1,4 +1,4 @@
-From a3089f8d52c96fef4e885b5594ba2faba0e7b46c Mon Sep 17 00:00:00 2001
+From cf9e407d9a92bfccd2603df5f8cd04d4edb65566 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:08:00 +0500
 Subject: [PATCH v5 08/10] wifi: rtw89: skip host-side TX hooks for injected
@@ -27,7 +27,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 12 insertions(+), 5 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index c14e97c..eea0f0e 100644
+index 42823857d..c4c431aa0 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -1351,9 +1351,11 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,
@@ -45,7 +45,7 @@ index c14e97c..eea0f0e 100644
  		rtw89_core_tx_update_llc_hdr(rtwdev, desc_info, skb);
  		break;
  	default:
-@@ -1469,8 +1471,10 @@ static int rtw89_core_tx_write_link(struct rtw89_dev *rtwdev,
+@@ -1477,8 +1479,10 @@ static int rtw89_core_tx_write_link(struct rtw89_dev *rtwdev,
  	tx_req.rtwsta_link = rtwsta_link;
  	tx_req.with_wait = !!wait;
  
@@ -58,7 +58,7 @@ index c14e97c..eea0f0e 100644
  	rtw89_core_tx_update_desc_info(rtwdev, &tx_req);
  	rtw89_core_tx_wake(rtwdev, &tx_req);
  
-@@ -4733,6 +4737,9 @@ static void rtw89_core_txq_check_agg(struct rtw89_dev *rtwdev,
+@@ -4741,6 +4745,9 @@ static void rtw89_core_txq_check_agg(struct rtw89_dev *rtwdev,
  	struct ieee80211_sta *sta = txq->sta;
  	struct rtw89_sta *rtwsta = sta_to_rtwsta_safe(sta);
  

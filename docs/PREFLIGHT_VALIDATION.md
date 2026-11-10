@@ -19,8 +19,9 @@ automatically by [CI](../.github/workflows/ci.yml):
 | Build after each patch (bisectability) | all 10 steps build cleanly (PCIe, USB, AX, and BE modules enabled) |
 | `make W=1 C=1` (`sparse` + `CONFIG_PROVE_LOCKING=y`) | 0 new compiler or sparse warnings across the series |
 | `checkpatch.pl --strict` | 0 errors, 0 warnings, 0 checks across `v5-0001`..`v5-0010` |
-| `patch_rtw89.py --apply` on `v6.6` (Gen 1), `v6.12` (Gen 2), and `v7.4-rc1` | hooks apply cleanly without warnings; `--revert` restores trees byte-for-byte |
-| DKMS flow (`dkms_prepare.sh`, `dkms_pre_build.sh`) | handles stable and `-rc` kernel versions (`BUILD_EXCLUSIVE_KERNEL`), rejects mismatched series |
+| `patch_rtw89.py --apply` across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` | hooks apply cleanly without warnings; `--revert` restores trees byte-for-byte |
+| Out-of-tree Kbuild (`make W=1 modules`) on LTS `v6.12` (Gen 1) and LTS `v6.18` (Gen 2) | compiles all AX/BE PCIe & USB modules cleanly with 0 warnings |
+| DKMS flow (`dkms_prepare.sh`, `dkms_pre_build.sh`) | handles stable, `-rc`, and cross-series `.config` lookup (`BUILD_EXCLUSIVE_KERNEL`), rejects mismatched series |
 
 ## 3. Firmware verification (`RTL8852AE` `0.13.36.2`, commit `52acc807`)
 
@@ -28,12 +29,13 @@ All firmware-facing assumptions in patches 3, 5, and 10 were verified statically
 unmodified `linux-firmware` (`rtw89/rtw8852a_fw-1.bin`, SHA-256
 `fdb5513cf7372440d7980a61aa4b753b192b056734a978458ae4a4ef7f4b2c1e`):
 
-- **JoinInfo H2C role handling (patch 5):** `H2C_FUNC_MAC_JOININFO_Handler` routes
-  `(self_role != RTW89_SELF_ROLE_AP && op == 1)` (`net_type == RTW89_NET_TYPE_NO_LINK`)
-  into the role-disconnect path, which returns early without calling `CCTL_ResetByMacid` on
-  a newly created monitor MAC ID. Using `RTW89_SELF_ROLE_AP` with `RTW89_NET_TYPE_NO_LINK`
-  initializes the MAC ID's CMAC control entry (`CCTL_ResetByMacid` + role connect) while
-  skipping client TBTT tracking and AP beacon transmission.
+- **JoinInfo H2C role handling (patch 5):** `H2C_FUNC_MAC_JOININFO_Handler` (`0xb89949c0`)
+  routes `(self_role != RTW89_SELF_ROLE_AP && op == 1)` (`net_type == RTW89_NET_TYPE_NO_LINK`)
+  into `HAL8852A_Role_Disconnect` (`0xb897ddec`), which deactivates the role entry just
+  created by `ROLE_MAINTAIN` and skips `CCTL_ResetByMacid` (`0xb89bddac`). Using
+  `RTW89_SELF_ROLE_AP` with `RTW89_NET_TYPE_NO_LINK` initializes the MAC ID's CMAC control
+  entry (`CCTL_ResetByMacid` + `HAL8852A_Role_Connect` at `0xb897dc78`) while skipping
+  client TBTT tracking and AP beacon transmission.
 - **RX filter across scan/ROC/MAC init (patch 3):** Firmware scan offload pauses/restores
   `0xCE06`, while host `rtw89_hw_scan_complete_cb()`, `rtw89_roc_end()`, `rx_fltr_init_ax()`,
   and `rx_fltr_init_be()` rewrite `rtwdev->hal.rx_fltr` to `R_AX_RX_FLTR_OPT` (`0xCE20`) /

@@ -39,10 +39,10 @@ jobs:
       - name: Unit tests
         run: python3 -m unittest discover -s tests -v
 
-      - name: Cross-LTS patch_rtw89.py apply/revert check (v6.1, v6.6, v6.12 Gen 1 & v6.18 Gen 2)
+      - name: Cross-LTS patch_rtw89.py apply/revert check (v6.1, v6.6, v6.12 Gen 1 & v6.15, v6.18 Gen 2)
         run: |
           set -euo pipefail
-          for tag_gen in "v6.1:1" "v6.6:1" "v6.12:1" "v6.18:2"; do
+          for tag_gen in "v6.1:1" "v6.6:1" "v6.12:1" "v6.15:2" "v6.18:2"; do
             tag="${tag_gen%%:*}"
             gen="${tag_gen##*:}"
             dir="$(mktemp -d)"
@@ -162,6 +162,76 @@ jobs:
             echo "::error::integrator build has warnings"
             exit 1
           fi
+          python3 repo/scripts/patch_rtw89.py --rtw89-dir oot --revert
+          diff -r oot pristine-rtw89 --exclude='*.o' --exclude='*.ko' \
+            --exclude='*.mod*' --exclude='.*' --exclude='modules.order' --exclude='Module.symvers'
+
+  lts-kbuild:
+    name: Out-of-tree Kbuild (${{ matrix.kernel.tag }}, API Gen ${{ matrix.kernel.gen }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel:
+          - { tag: "v6.12", gen: "1" }
+          - { tag: "v6.18", gen: "2" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev sparse
+
+      - name: Fetch Linux ${{ matrix.kernel.tag }}
+        run: |
+          git init -q linux
+          git -C linux fetch -q --depth 1 https://github.com/torvalds/linux.git "refs/tags/${{ matrix.kernel.tag }}"
+          git -C linux checkout -q FETCH_HEAD
+
+      - name: Configure and prepare (${{ matrix.kernel.tag }})
+        working-directory: linux
+        run: |
+          make -s defconfig
+          ./scripts/config -e PCI -e USB -e CFG80211 -e MAC80211 -e WLAN -e WLAN_VENDOR_REALTEK \
+            -m RTW89 -m RTW89_PCI -m RTW89_USB \
+            -m RTW89_8852AE -m RTW89_8852AU \
+            -m RTW89_8852BE -m RTW89_8852BU -m RTW89_8852BTE \
+            -m RTW89_8852CE -m RTW89_8852CU \
+            -m RTW89_8851BE -m RTW89_8851BU \
+            -m RTW89_8922AE -m RTW89_8922AU \
+            -e RTW89_DEBUGMSG -e RTW89_DEBUGFS -e PROVE_LOCKING
+          make -s olddefconfig
+          make -s -j"$(nproc)" modules_prepare
+          cp -a drivers/net/wireless/realtek/rtw89 ../pristine-rtw89
+
+      - name: Baseline out-of-tree build (${{ matrix.kernel.tag }})
+        run: |
+          set -euo pipefail
+          cp -a pristine-rtw89 base-oot
+          make -C linux -j"$(nproc)" KBUILD_MODPOST_WARN=1 W=1 C=1 \
+            M="$PWD/base-oot" modules 2>&1 | tee base.log
+          grep -E 'warning:|error:' base.log | sed -E 's|^.*/base-oot/|rtw89/|; s/:[0-9]+:[0-9]+:/:/' | sort -u > base.warn || true
+
+      - name: Patched out-of-tree build & revert (${{ matrix.kernel.tag }})
+        run: |
+          set -euo pipefail
+          cp -a pristine-rtw89 oot
+          python3 repo/scripts/patch_rtw89.py --rtw89-dir oot --apply
+          grep -qx "#define RTW89_MON_API_GEN ${{ matrix.kernel.gen }}" oot/rtw89_mon_autoconf.h
+          make -C linux -j"$(nproc)" KBUILD_MODPOST_WARN=1 W=1 C=1 \
+            M="$PWD/oot" modules 2>&1 | tee oot.log
+          grep -E 'warning:|error:' oot.log | sed -E 's|^.*/oot/|rtw89/|; s/:[0-9]+:[0-9]+:/:/' | sort -u > oot.warn || true
+          if comm -13 base.warn oot.warn | grep .; then
+            echo "::error::Out-of-tree build on ${{ matrix.kernel.tag }} introduced compiler or sparse warnings"
+            exit 1
+          fi
+          test -f oot/rtw89_core.ko
+          test -f oot/rtw89_8852ae.ko
+          test -f oot/rtw89_8922ae.ko
           python3 repo/scripts/patch_rtw89.py --rtw89-dir oot --revert
           diff -r oot pristine-rtw89 --exclude='*.o' --exclude='*.ko' \
             --exclude='*.mod*' --exclude='.*' --exclude='modules.order' --exclude='Module.symvers'

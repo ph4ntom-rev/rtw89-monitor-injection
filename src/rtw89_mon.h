@@ -16,9 +16,10 @@
 #include "rtw89_mon_autoconf.h"
 
 /*
- * Default to API Gen 2 (Linux 6.11+ MLO struct rtw89_vif_link).
+ * Default to API Gen 2 (Linux 6.13+ MLO struct rtw89_vif_link).
  * scripts/patch_rtw89.py auto-generates rtw89_mon_autoconf.h with
- * RTW89_MON_API_GEN = 1 when targeting older kernels (Linux 6.1 - 6.10).
+ * RTW89_MON_API_GEN = 1 when targeting older kernels (Linux 6.1 - 6.12),
+ * along with granular per-symbol capability flags below.
  */
 #ifndef RTW89_MON_API_GEN
 #define RTW89_MON_API_GEN 2
@@ -30,6 +31,10 @@
 
 #ifndef RTW89_MON_PURE_VIF_RCU
 #define RTW89_MON_PURE_VIF_RCU 0
+#endif
+
+#ifndef RTW89_MON_USES_WIPHY_LOCK
+#define RTW89_MON_USES_WIPHY_LOCK 1
 #endif
 
 #ifndef RTW89_MON_HAS_TX_INJECTION_FUNC
@@ -46,6 +51,34 @@
 
 #ifndef RTW89_MON_HAS_TXD_EXT
 #define RTW89_MON_HAS_TXD_EXT 0
+#endif
+
+#ifndef RTW89_MON_HAS_SET_RX_FLTR
+#define RTW89_MON_HAS_SET_RX_FLTR 1
+#endif
+
+#ifndef RTW89_MON_HAS_MAC_DEF_RX_FLTR
+#define RTW89_MON_HAS_MAC_DEF_RX_FLTR 1
+#endif
+
+#ifndef RTW89_MON_ENTITY_STATE_2ARGS
+#define RTW89_MON_ENTITY_STATE_2ARGS 1
+#endif
+
+#ifndef RTW89_MON_HAS_CHANCTX_0
+#define RTW89_MON_HAS_CHANCTX_0 1
+#endif
+
+#ifndef RTW89_MON_HAS_CHIP_GET_CH_DMA
+#define RTW89_MON_HAS_CHIP_GET_CH_DMA 1
+#endif
+
+#ifndef RTW89_MON_HAS_CHIP_BE
+#define RTW89_MON_HAS_CHIP_BE 1
+#endif
+
+#ifndef RTW89_MON_HAS_UPD_WLAN_HDR
+#define RTW89_MON_HAS_UPD_WLAN_HDR 1
 #endif
 
 void rtw89_mon_register_hw_caps(struct rtw89_dev *rtwdev);

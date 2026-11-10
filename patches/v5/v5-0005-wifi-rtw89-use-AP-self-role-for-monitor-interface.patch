@@ -1,4 +1,4 @@
-From 497e683a2b30a388e2935490697bae856d537993 Mon Sep 17 00:00:00 2001
+From ae13dce44ead767d51890e930cd5dac472db70cc Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:05:00 +0500
 Subject: [PATCH v5 05/10] wifi: rtw89: use AP self role for monitor interfaces
@@ -6,15 +6,16 @@ Subject: [PATCH v5 05/10] wifi: rtw89: use AP self role for monitor interfaces
 rtw89_vif_type_mapping() leaves net_type and self_role zero for
 NL80211_IFTYPE_MONITOR, i.e. RTW89_NET_TYPE_NO_LINK and
 RTW89_SELF_ROLE_CLIENT. When rtw89_mac_add_vif() initializes the
-interface, it sends the JoinInfo H2C command with disassoc set
-(op == 1) and this client role.
+interface, rtw89_mac_vif_init() first creates the role via H2C
+ROLE_MAINTAIN and then sends JoinInfo with disassoc set (op == 1) and
+this client role.
 
 In firmware (verified on RTL8852AE firmware 0.13.36.2), the JoinInfo
 H2C handler treats (self_role != RTW89_SELF_ROLE_AP && op == 1) as a
-disconnect request for an existing station link, which fails role
-lookup on a newly created monitor MAC ID and skips initializing its
-CMAC control table entry (CCTL_ResetByMacid). Frames queued on that
-MAC ID are then silently dropped instead of transmitted.
+station disconnect request (HAL8852A_Role_Disconnect), which clears the
+newly created role's active bit in the firmware role table and skips
+initializing its CMAC control table entry (CCTL_ResetByMacid). Frames
+queued on that MAC ID are then silently dropped instead of transmitted.
 
 With self_role set to RTW89_SELF_ROLE_AP and net_type kept at
 RTW89_NET_TYPE_NO_LINK, the JoinInfo H2C handler initializes the
@@ -29,7 +30,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 2 insertions(+)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index 0744c31..e82285a 100644
+index 0744c3126..e82285a3f 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -5744,6 +5744,8 @@ void rtw89_vif_type_mapping(struct rtw89_vif_link *rtwvif_link, bool assoc)

@@ -1,12 +1,14 @@
-From a6de002f3da46e52ead9cb003d824ab6ddc81c9d Mon Sep 17 00:00:00 2001
+From 2d2bd7629247a24c62786a7568b37b84091ae30f Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:06:00 +0500
 Subject: [PATCH v5 06/10] wifi: rtw89: transmit frames from a standalone
  monitor interface
 
-Frames injected on a monitor interface reach rtw89_ops_tx() either
-with info->control.vif == NULL, with a monitor vif, or with a running
-interface matched by addr2.
+Frames injected on a monitor interface reach the driver either through
+rtw89_ops_tx() (with info->control.vif == NULL, a monitor vif, or a
+running interface matched by addr2) or, for injected data frames whose
+addr2 matches an active interface, via wake_tx_queue and
+rtw89_core_txq_push().
 
 Passing local->monitor_sdata directly is racy because
 ieee80211_del_virtual_monitor() calls drv_remove_interface() before
@@ -14,23 +16,44 @@ clearing local->monitor_sdata, so mac80211 may still pass the virtual
 monitor vif to rtw89_ops_tx() after the driver has released its MAC ID
 and port.
 
-Resolve NULL and monitor vifs through rtwdev->pure_monitor_mode_vif
-under rcu_read_lock(), and verify with skb_headlen() that injected
-frames carry a complete linear 802.11 header before accessing header
-fields in skb->data. Frames from monitor interfaces are dropped when
-no standalone monitor vif exists, preserving the drop behavior while a
+Resolve NULL and monitor vifs in rtw89_ops_tx() through
+rtwdev->pure_monitor_mode_vif under rcu_read_lock(), and verify with
+skb_headlen() in rtw89_core_tx_write_link() that injected frames on any
+TX path carry a complete linear 802.11 header before accessing header
+fields in skb->data. Frames from monitor interfaces are dropped when no
+standalone monitor vif exists, preserving the drop behavior while a
 non-monitor interface is active.
 
 Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---
- drivers/net/wireless/realtek/rtw89/mac80211.c | 43 ++++++++++++++++---
- 1 file changed, 36 insertions(+), 7 deletions(-)
+ drivers/net/wireless/realtek/rtw89/core.c     |  8 +++++
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 30 ++++++++++++++-----
+ 2 files changed, 31 insertions(+), 7 deletions(-)
 
+diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
+index e82285a3f..4606638b4 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.c
++++ b/drivers/net/wireless/realtek/rtw89/core.c
+@@ -1450,6 +1450,14 @@ static int rtw89_core_tx_write_link(struct rtw89_dev *rtwdev,
+ 	struct rtw89_core_tx_request tx_req = {};
+ 	int ret;
+ 
++	if (unlikely(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED)) {
++		struct ieee80211_hdr *hdr = (void *)skb->data;
++
++		if (skb_headlen(skb) < sizeof(struct ieee80211_cts) ||
++		    skb_headlen(skb) < ieee80211_hdrlen(hdr->frame_control))
++			return -EINVAL;
++	}
++
+ 	tx_req.skb = skb;
+ 	tx_req.vif = vif;
+ 	tx_req.sta = sta;
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index ab06172..771e8c9 100644
+index ab061720d..e5b89e6d8 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
-@@ -28,28 +28,57 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
+@@ -28,28 +28,44 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
  	struct rtw89_vif *rtwvif;
  	int ret, qsel;
  
@@ -41,34 +64,21 @@ index ab06172..771e8c9 100644
 +	rcu_read_lock();
 +
 +	if (unlikely(!vif || vif->type == NL80211_IFTYPE_MONITOR)) {
-+		struct ieee80211_hdr *hdr = (void *)skb->data;
- 
--	rtwvif = vif_to_rtwvif(vif);
 +		/* Frames from monitor interfaces are only sent when a monitor
 +		 * vif is the sole active interface. The pointer is cleared and
 +		 * synchronize_rcu() is called before that vif is removed, so
 +		 * a vif that mac80211 is still tearing down is never used.
 +		 */
 +		rtwvif = rcu_dereference(rtwdev->pure_monitor_mode_vif);
-+		if (!rtwvif || skb_headlen(skb) < sizeof(struct ieee80211_cts) ||
-+		    skb_headlen(skb) < ieee80211_hdrlen(hdr->frame_control)) {
++		if (!rtwvif) {
 +			ieee80211_free_txskb(hw, skb);
 +			goto out;
 +		}
-+
+ 
+-	rtwvif = vif_to_rtwvif(vif);
 +		vif = rtwvif_to_vif(rtwvif);
 +		info->control.vif = vif;
 +	} else {
-+		if (unlikely(flags & IEEE80211_TX_CTL_INJECTED)) {
-+			struct ieee80211_hdr *hdr = (void *)skb->data;
-+
-+			if (skb_headlen(skb) < sizeof(struct ieee80211_cts) ||
-+			    skb_headlen(skb) < ieee80211_hdrlen(hdr->frame_control)) {
-+				ieee80211_free_txskb(hw, skb);
-+				goto out;
-+			}
-+		}
-+
 +		rtwvif = vif_to_rtwvif(vif);
 +	}
  

@@ -17,7 +17,7 @@
 | :--- | :--- |
 | Текущая серия | [`patches/v5/`](patches/v5/), 10 патчей, база `torvalds/linux` [`d48723711bae`](https://github.com/torvalds/linux/commit/d48723711bae9b8cdc56719c448ba42fef28cbee) (окно слияния 7.4-rc1) |
 | Рассылка | v3 [отправлена](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/) 2026-11-05, ждёт ревью. v4 не отправлялась. v5 проверена на прошивке и железе и готова к отправке после ревью v3. |
-| Сборка и статика | Каждый патч собирается отдельно; `W=1` и sparse (`C=1`) с `CONFIG_PROVE_LOCKING=y` дают 0 новых предупреждений; `checkpatch.pl --strict` — 0 ошибок/предупреждений; `patch_rtw89.py` проверяется на `v6.6`, `v6.12` и `v7.4-rc1` в [CI](.github/workflows/ci.yml). |
+| Сборка и статика | Каждый патч собирается отдельно; `W=1` и sparse (`C=1`) с `CONFIG_PROVE_LOCKING=y` дают 0 новых предупреждений; `checkpatch.pl --strict` — 0 ошибок/предупреждений; `patch_rtw89.py` проверяется на `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2) и `v7.4-rc1` с реальной Kbuild-сборкой `make W=1 modules` на LTS `v6.12`, LTS `v6.18` и `v7.4-rc1` в [CI](.github/workflows/ci.yml). |
 | Проверка на железе | **RTL8852AE** (`10ec:8852`, прошивка `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — верифицирована на прошивке и протестирована вживую на коде **v5**, см. [отчёт](docs/PREFLIGHT_VALIDATION.md). |
 | Не проверено на железе | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB-адаптеры, DBCC. |
 

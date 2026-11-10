@@ -110,16 +110,73 @@ ALL_LEAF_CANDIDATES=(
     rtw_8852ae rtw_8852be rtw_8852ce rtw_8851be
 )
 
+add_unique_leaf_mod() {
+    local candidate="$1"
+    local existing
+    for existing in "${LOADED_LEAF_MODS[@]}"; do
+        [[ "${existing}" == "${candidate}" ]] && return 0
+    done
+    LOADED_LEAF_MODS+=("${candidate}")
+}
+
 detect_loaded_leaf_modules() {
     LOADED_LEAF_MODS=()
-    local mod
+    local mod dev vendor device prod modalias resolved
     for mod in "${ALL_LEAF_CANDIDATES[@]}"; do
         if lsmod | awk '{print $1}' | grep -qx "${mod}"; then
-            LOADED_LEAF_MODS+=("${mod}")
+            add_unique_leaf_mod "${mod}"
         fi
     done
+    if [[ ${#LOADED_LEAF_MODS[@]} -gt 0 ]]; then
+        return 0
+    fi
+
+    # Fallback 1: inspect PCI sysfs IDs when leaf modules were manually unloaded.
+    for dev in /sys/bus/pci/devices/*; do
+        [[ -r "${dev}/vendor" && -r "${dev}/device" ]] || continue
+        vendor=$(tr '[:upper:]' '[:lower:]' < "${dev}/vendor")
+        device=$(tr '[:upper:]' '[:lower:]' < "${dev}/device")
+        [[ "${vendor}" == "0x10ec" ]] || continue
+        case "${device}" in
+            0x8852|0xa85a) add_unique_leaf_mod "rtw89_8852ae" ;;
+            0xb852|0xb85b) add_unique_leaf_mod "rtw89_8852be" ;;
+            0xb520)        add_unique_leaf_mod "rtw89_8852bte" ;;
+            0xc852)        add_unique_leaf_mod "rtw89_8852ce" ;;
+            0xb851)        add_unique_leaf_mod "rtw89_8851be" ;;
+            0x8922|0x892b) add_unique_leaf_mod "rtw89_8922ae" ;;
+            0x892d|0x882d|0x895d) add_unique_leaf_mod "rtw89_8922de" ;;
+        esac
+    done
+
+    # Fallback 2: inspect USB sysfs IDs and kernel modalias database for USB/OEM IDs.
+    for dev in /sys/bus/usb/devices/*; do
+        [[ -r "${dev}/idVendor" && -r "${dev}/idProduct" ]] || continue
+        vendor=$(tr '[:upper:]' '[:lower:]' < "${dev}/idVendor")
+        prod=$(tr '[:upper:]' '[:lower:]' < "${dev}/idProduct")
+        if [[ "${vendor}" == "0bda" ]]; then
+            case "${prod}" in
+                b831|b851)                add_unique_leaf_mod "rtw89_8851bu" ;;
+                8832|885a|885c)           add_unique_leaf_mod "rtw89_8852au" ;;
+                b832|b83a|b852|b85a|a85b) add_unique_leaf_mod "rtw89_8852bu" ;;
+                c832|c85a|c85d)           add_unique_leaf_mod "rtw89_8852cu" ;;
+                8912)                     add_unique_leaf_mod "rtw89_8922au" ;;
+            esac
+        fi
+    done
+
+    if [[ ${#LOADED_LEAF_MODS[@]} -eq 0 ]] && command -v modprobe >/dev/null 2>&1; then
+        for modalias in /sys/bus/pci/devices/*/modalias /sys/bus/usb/devices/*/modalias; do
+            [[ -r "${modalias}" ]] || continue
+            while IFS= read -r resolved; do
+                for mod in "${ALL_LEAF_CANDIDATES[@]}"; do
+                    [[ "${resolved}" == "${mod}" ]] && add_unique_leaf_mod "${mod}"
+                done
+            done < <(modprobe -R "$(cat "${modalias}")" 2>/dev/null || true)
+        done
+    fi
+
     if [[ ${#LOADED_LEAF_MODS[@]} -eq 0 ]]; then
-        LOADED_LEAF_MODS=(rtw89_8852ae)
+        echo "[WARN] Could not auto-detect an active rtw89 PCIe/USB adapter; skipping automatic leaf module reload."
     fi
 }
 
@@ -203,7 +260,7 @@ if [[ ${DO_UNINSTALL} -eq 1 ]]; then
     for mod in "${LOADED_LEAF_MODS[@]}"; do
         sudo modprobe "${mod}" || true
     done
-    echo "[OK] Restored distribution rtw89 modules (${LOADED_LEAF_MODS[*]})."
+    echo "[OK] Restored distribution rtw89 modules (${LOADED_LEAF_MODS[*]:-none})."
     exit 0
 fi
 
@@ -220,7 +277,7 @@ fi
 
 if command -v lspci >/dev/null 2>&1; then
     echo "  PCIe Realtek Wi-Fi check  :"
-    lspci -nn | grep -iE "10ec:(8851|8852|8922)" || echo "    (no Realtek rtw89 PCIe device reported by lspci)"
+    lspci -nn | grep -iE "10ec:(8851|8852|a85a|b851|b852|b85b|b520|c852|8922|892b|892d|882d|895d)" || echo "    (no Realtek rtw89 PCIe device reported by lspci)"
 fi
 
 echo "  Recent rtw89 dmesg lines  :"
@@ -288,7 +345,7 @@ if [[ ${DO_INSTALL} -eq 1 ]]; then
     for mod in "${LOADED_LEAF_MODS[@]}"; do
         sudo modprobe "${mod}"
     done
-    echo "[OK] Installed and loaded: ${LOADED_LEAF_MODS[*]}"
+    echo "[OK] Installed and loaded: ${LOADED_LEAF_MODS[*]:-none}"
 elif [[ ${DO_RELOAD} -eq 1 ]]; then
     echo ""
     echo "=== [4] Reloading rtw89 Modules (live session) ==="
@@ -296,11 +353,13 @@ elif [[ ${DO_RELOAD} -eq 1 ]]; then
     confirm_unload
     unload_rtw89_stack
 
-    PS_OPT=""
-    [[ ${DO_DISABLE_PS} -eq 1 ]] && PS_OPT="disable_ps_mode=y"
+    PS_ARGS=()
+    if [[ ${DO_DISABLE_PS} -eq 1 ]]; then
+        PS_ARGS=("disable_ps_mode=y")
+    fi
 
     if [[ -f "${RTW89_DIR}/rtw89_core.ko" ]]; then
-        sudo insmod "${RTW89_DIR}/rtw89_core.ko" ${PS_OPT}
+        sudo insmod "${RTW89_DIR}/rtw89_core.ko" "${PS_ARGS[@]}"
         [[ -f "${RTW89_DIR}/rtw89_pci.ko" ]] && sudo insmod "${RTW89_DIR}/rtw89_pci.ko"
         [[ -f "${RTW89_DIR}/rtw89_usb.ko" ]] && sudo insmod "${RTW89_DIR}/rtw89_usb.ko"
         [[ -f "${RTW89_DIR}/rtw89_8852b_common.ko" ]] && sudo insmod "${RTW89_DIR}/rtw89_8852b_common.ko"
@@ -308,7 +367,9 @@ elif [[ ${DO_RELOAD} -eq 1 ]]; then
             [[ -f "${RTW89_DIR}/${base}.ko" ]] && sudo insmod "${RTW89_DIR}/${base}.ko" || true
         done
         for mod in "${LOADED_LEAF_MODS[@]}"; do
-            [[ -f "${RTW89_DIR}/${mod}.ko" ]] && sudo insmod "${RTW89_DIR}/${mod}.ko"
+            if [[ -f "${RTW89_DIR}/${mod}.ko" ]]; then
+                sudo insmod "${RTW89_DIR}/${mod}.ko"
+            fi
         done
     else
         echo "[ERROR] Could not locate built rtw89_core.ko in ${RTW89_DIR}" >&2

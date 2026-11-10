@@ -1,4 +1,4 @@
-From 5b14e8730d5707cdf23f99f18180d5e15cab5ffb Mon Sep 17 00:00:00 2001
+From 459d78300df0f2eb74f595fb2593899c9f755294 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:04:00 +0500
 Subject: [PATCH v5 04/10] wifi: rtw89: protect pure_monitor_mode_vif with RCU
@@ -28,7 +28,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  3 files changed, 51 insertions(+), 7 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index f103f75..0744c31 100644
+index f103f75c8..0744c3126 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -530,7 +530,7 @@ void rtw89_chip_rfk_channel(struct rtw89_dev *rtwdev,
@@ -56,7 +56,7 @@ index f103f75..0744c31 100644
  	if (!rtwvif)
  		return;
 diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
-index 0d893b9..d7f3039 100644
+index 0d893b992..d7f30394c 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.h
 +++ b/drivers/net/wireless/realtek/rtw89/core.h
 @@ -7813,7 +7813,7 @@ struct rtw89_dev {
@@ -69,7 +69,7 @@ index 0d893b9..d7f3039 100644
  
  	/* HCI related data, keep last */
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index e32c2db..ab06172 100644
+index e32c2db2d..ab061720d 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
 @@ -173,6 +173,45 @@ static void __rtw89_ops_remove_iface_link(struct rtw89_dev *rtwdev,

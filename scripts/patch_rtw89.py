@@ -7,8 +7,8 @@ Automated cross-kernel source integrator for rtw89 monitor mode, standalone
 raw frame injection, and monitor restart channel restoration (PATCH v5, best effort).
 
 Supported kernel driver generations:
-  - API Gen 1: Linux 6.1 - 6.10 (legacy struct rtw89_vif, rtwdev->mutex)
-  - API Gen 2: Linux 6.11 - 7.x+ (MLO struct rtw89_vif_link, pure_monitor_mode_vif, wiphy_lock)
+  - API Gen 1: Linux 6.1 - 6.12 (legacy struct rtw89_vif, rtwdev->mutex)
+  - API Gen 2: Linux 6.13 - 7.x+ (MLO struct rtw89_vif_link, pure_monitor_mode_vif, wiphy_lock)
 
 Note: For mainline Linux 7.2+ / wireless-next trees, prefer applying the
 upstream patch series in patches/v5/ directly via `git am patches/v5/v5-00*-wifi-*.patch`.
@@ -28,11 +28,11 @@ BACKUP_TARGETS = (
     "Makefile",
     "Kbuild",
     "core.h",
-    "txrx.h",
     "core.c",
     "mac80211.c",
     "mac.c",
     "mac_be.c",
+    "fw.c",
 )
 
 
@@ -42,22 +42,62 @@ def detect_tree_features(rtw89_dir: Path) -> dict:
         raise FileNotFoundError(f"core.h not found in {rtw89_dir}")
 
     text = core_h.read_text(encoding="utf-8", errors="replace")
+    mac_h_text = (
+        (rtw89_dir / "mac.h").read_text(encoding="utf-8", errors="replace")
+        if (rtw89_dir / "mac.h").is_file()
+        else ""
+    )
+    chan_h_text = (
+        (rtw89_dir / "chan.h").read_text(encoding="utf-8", errors="replace")
+        if (rtw89_dir / "chan.h").is_file()
+        else ""
+    )
+    mac80211_text = (
+        (rtw89_dir / "mac80211.c").read_text(encoding="utf-8", errors="replace")
+        if (rtw89_dir / "mac80211.c").is_file()
+        else ""
+    )
+    core_c_text = (
+        (rtw89_dir / "core.c").read_text(encoding="utf-8", errors="replace")
+        if (rtw89_dir / "core.c").is_file()
+        else ""
+    )
+    mac_c_text = (
+        (rtw89_dir / "mac.c").read_text(encoding="utf-8", errors="replace")
+        if (rtw89_dir / "mac.c").is_file()
+        else ""
+    )
+
     has_vif_link = bool(re.search(r"\bstruct\s+rtw89_vif_link\s*\{", text))
     has_pure_mon = bool(re.search(r"\bpure_monitor_mode_vif\b", text))
     pure_mon_rcu = bool(re.search(r"struct\s+rtw89_vif\s+__rcu\s*\*\s*pure_monitor_mode_vif\b", text))
     has_rtwdev_ops = bool(re.search(r"\bstruct\s+ieee80211_ops\s+\*\s*ops\s*;", text))
-    has_wiphy_lock = False
+    has_wiphy_lock = "lockdep_assert_wiphy" in mac80211_text or "wiphy_lock(" in mac80211_text
+    has_tx_inj = "rtw89_core_tx_update_injection" in core_c_text
 
-    mac80211_c = rtw89_dir / "mac80211.c"
-    if mac80211_c.is_file():
-        m_text = mac80211_c.read_text(encoding="utf-8", errors="replace")
-        has_wiphy_lock = "lockdep_assert_wiphy" in m_text or "wiphy_lock(" in m_text
+    has_set_rx_fltr = (
+        "rtw89_mac_set_rx_fltr" in mac_h_text
+        or "rtw89_mac_set_rx_fltr" in mac_c_text
+        or "rtw89_mac_set_rx_fltr" in mac80211_text
+    )
+    has_mac_def_rx_fltr = bool(
+        re.search(r"\bu32\s+rx_fltr\s*;", mac_h_text)
+        or "mac->rx_fltr" in mac80211_text
+        or "mac->rx_fltr" in core_c_text
+    )
 
-    has_tx_inj = False
-    core_c = rtw89_dir / "core.c"
-    if core_c.is_file():
-        c_text = core_c.read_text(encoding="utf-8", errors="replace")
-        has_tx_inj = "rtw89_core_tx_update_injection" in c_text
+    chan_decl_src = chan_h_text + "\n" + text
+    if "rtw89_get_entity_state" in chan_decl_src:
+        entity_state_2args = bool(
+            re.search(r"rtw89_get_entity_state\s*\(\s*struct\s+rtw89_dev\s*\*\s*\w*\s*,", chan_decl_src)
+        )
+    else:
+        entity_state_2args = has_vif_link
+
+    has_chanctx_0 = "RTW89_CHANCTX_0" in text or "RTW89_CHANCTX_0" in mac80211_text or has_vif_link
+    has_chip_get_ch_dma = "rtw89_chip_get_ch_dma" in text or "rtw89_chip_get_ch_dma" in core_c_text
+    has_chip_be = "RTW89_HW_RATE_V1_MCS0" in text and "RTW89_CHIP_BE" in text
+    has_upd_wlan_hdr = bool(re.search(r"\bbool\s+upd_wlan_hdr\s*;", text))
 
     return {
         "api_gen": 2 if has_vif_link else 1,
@@ -67,6 +107,13 @@ def detect_tree_features(rtw89_dir: Path) -> dict:
         "has_rtwdev_ops": has_rtwdev_ops,
         "uses_wiphy_lock": has_wiphy_lock,
         "has_tx_injection_func": has_tx_inj,
+        "has_set_rx_fltr": has_set_rx_fltr,
+        "has_mac_def_rx_fltr": has_mac_def_rx_fltr,
+        "entity_state_2args": entity_state_2args,
+        "has_chanctx_0": has_chanctx_0,
+        "has_chip_get_ch_dma": has_chip_get_ch_dma,
+        "has_chip_be": has_chip_be,
+        "has_upd_wlan_hdr": has_upd_wlan_hdr,
         "host_os": platform.system(),
         "host_release": platform.release(),
     }
@@ -156,7 +203,11 @@ def patch_core_h(core_h_path: Path) -> tuple:
     txt = core_h_path.read_text(encoding="utf-8", errors="replace")
     if MARKER in txt:
         has_rcu = bool(re.search(r"struct\s+rtw89_vif\s+__rcu\s*\*\s*pure_monitor_mode_vif\b", txt))
-        has_txd_ext = "bool dis_rts;" in txt and "bool no_ack;" in txt
+        has_txd_ext = (
+            "bool dis_rts;" in txt
+            and "bool dis_hw_rts;" in txt
+            and "bool no_ack;" in txt
+        )
         return (has_rcu, has_txd_ext, False)
 
     changed = False
@@ -178,13 +229,23 @@ def patch_core_h(core_h_path: Path) -> tuple:
         if brace_close != -1:
             body = txt[brace_open:brace_close]
             bmc_m = re.search(r"^(\s*)bool\s+is_bmc\s*;", body, re.MULTILINE)
-            if bmc_m and "dis_rts" not in body and "no_ack" not in body:
+            if bmc_m and "dis_rts" not in body:
                 indent = bmc_m.group(1)
-                add = (
-                    f"\n{indent}/* {MARKER} */\n"
-                    f"{indent}bool dis_rts;\n"
-                    f"{indent}bool no_ack;"
-                )
+                extra_fields = [
+                    f"{indent}/* {MARKER} */",
+                    f"{indent}bool dis_rts;",
+                    f"{indent}bool dis_hw_rts;",
+                    f"{indent}bool no_ack;",
+                ]
+                if not re.search(r"\bdata_bw\s*(?::\s*\d+\s*)?;", body):
+                    extra_fields.append(f"{indent}u8 data_bw;")
+                if not re.search(r"\bgi_ltf\s*(?::\s*\d+\s*)?;", body):
+                    extra_fields.append(f"{indent}u8 gi_ltf;")
+                if not re.search(r"\btx_cnt_lmt_en\s*(?::\s*\d+\s*)?;", body):
+                    extra_fields.append(f"{indent}bool tx_cnt_lmt_en;")
+                if not re.search(r"\btx_cnt_lmt\s*(?::\s*\d+\s*)?;", body):
+                    extra_fields.append(f"{indent}u8 tx_cnt_lmt: 6;")
+                add = "\n" + "\n".join(extra_fields)
                 body = body[:bmc_m.end()] + add + body[bmc_m.end():]
                 txt = txt[:brace_open] + body + txt[brace_close:]
                 changed = True
@@ -195,25 +256,21 @@ def patch_core_h(core_h_path: Path) -> tuple:
     return (patched_rcu, patched_txd_ext, changed)
 
 
-def patch_txrx_h(txrx_h_path: Path) -> bool:
-    if not txrx_h_path.is_file():
-        return False
-    txt = txrx_h_path.read_text(encoding="utf-8", errors="replace")
-    if MARKER in txt or "BE_TXD_BODY6_NO_ACK" in txt:
-        return False
-    anchor = "#define BE_TXD_BODY6_UPD_WLAN_HDR BIT(15)"
-    if anchor not in txt:
-        return False
-    txt = txt.replace(
-        anchor,
-        f"/* {MARKER} */\n#define BE_TXD_BODY6_NO_ACK BIT(16)\n{anchor}",
-        1,
-    )
-    txrx_h_path.write_text(txt, encoding="utf-8", newline="\n")
-    return True
+def refine_direct_rx_fltr_restores(src: str) -> tuple:
+    """Ensure direct B_AX_RX_FLTR_CFG_MASK restores (scan/ROC on <= 6.18) refine monitor bits."""
+    pat = re.compile(r"(B_AX_RX_FLTR_CFG_MASK\s*,\s*)(rtwdev->hal\.rx_fltr)\b")
+    new_src, cnt = pat.subn(r"\1rtw89_mon_refine_rx_fltr(\2)", src)
+    return (new_src, cnt > 0)
 
 
-def patch_core_c(core_c_path: Path, pure_mon_rcu: bool, has_txd_ext: bool, has_be_noack: bool) -> tuple:
+def patch_core_c(
+    core_c_path: Path,
+    pure_mon_rcu: bool,
+    has_txd_ext: bool,
+    has_be_noack: bool,
+    has_set_rx_fltr: bool,
+    txrx_h_text: str,
+) -> tuple:
     src = core_c_path.read_text(encoding="utf-8", errors="replace")
     if MARKER in src:
         span_inj = find_c_function_span(src, "rtw89_core_tx_update_injection")
@@ -271,11 +328,12 @@ def patch_core_c(core_c_path: Path, pure_mon_rcu: bool, has_txd_ext: bool, has_b
         src = src[:span_tx_type[1]] + body + src[span_tx_type[2]:]
         notes.append("updated rtw89_core_get_tx_type() for injected Control frames")
 
-    # 2. rtw89_core_tx_update_injection -> fix unsigned u8 idx = -1 (0xff) corruption if present
+    # 2. rtw89_core_tx_update_injection -> fix unsigned u8 idx = -1 (0xff) and clamp rate bounds
     span_inj = find_c_function_span(src, "rtw89_core_tx_update_injection")
     tx_inj_safe = True
     if span_inj:
         body = src[span_inj[1]:span_inj[2]]
+        changed_inj = False
         if "u8 idx = info->control.rates[0].idx;" in body:
             body = body.replace(
                 "u8 idx = info->control.rates[0].idx;",
@@ -288,8 +346,37 @@ def patch_core_c(core_c_path: Path, pure_mon_rcu: bool, has_txd_ext: bool, has_b
                     "\tdesc_info->dis_data_fb = true;\n\n\tif (idx < 0)\n\t\treturn;\n",
                     1,
                 )
+            changed_inj = True
+        if "\t\tmcs = idx & 0xf;\n" in body:
+            body = body.replace(
+                "\t\tmcs = idx & 0xf;\n",
+                "\t\tmcs = umin(idx & 0xf, rtwdev->chip->chip_gen == RTW89_CHIP_BE ? 11 : 9);\n",
+                1,
+            )
+            changed_inj = True
+        if "\t\tdesc_info->data_rate = hw_rate->ht + idx;\n" in body:
+            body = body.replace(
+                "\t\tdesc_info->data_rate = hw_rate->ht + idx;\n",
+                "\t\tdesc_info->data_rate = hw_rate->ht + umin(idx, 31);\n",
+                1,
+            )
+            changed_inj = True
+        leg_old = (
+            "\t\tdesc_info->data_rate = idx + (chan->band_type == RTW89_BAND_2G ?\n"
+            "\t\t\t\t\t      RTW89_HW_RATE_CCK1 : RTW89_HW_RATE_OFDM6);"
+        )
+        if leg_old in body:
+            body = body.replace(
+                leg_old,
+                "\t\tdesc_info->data_rate = chan->band_type == RTW89_BAND_2G ?\n"
+                "\t\t\t\t       RTW89_HW_RATE_CCK1 + umin(idx, 11) :\n"
+                "\t\t\t\t       RTW89_HW_RATE_OFDM6 + umin(idx, 7);",
+                1,
+            )
+            changed_inj = True
+        if changed_inj:
             src = src[:span_inj[1]] + body + src[span_inj[2]:]
-            notes.append("guarded rtw89_core_tx_update_injection() against negative rate idx")
+            notes.append("validated signed and upper rate bounds in rtw89_core_tx_update_injection()")
         tx_inj_safe = ("s8 idx = info->control.rates[0].idx;" in body) and ("idx < 0" in body)
 
     # 3. rtw89_core_register_hw or rtw89_core_register -> before ieee80211_register_hw(...)
@@ -365,9 +452,17 @@ def patch_core_c(core_c_path: Path, pure_mon_rcu: bool, has_txd_ext: bool, has_b
             src = src[:span_txq[1]] + body + src[span_txq[2]:]
             notes.append("guarded rtw89_core_txq_check_agg() on injected frames")
 
-    # 6. Skip rtw89_traffic_stats_accu() (4 or 5 args) and rtw89_wow_parse_akm() on injected frames
+    # 6. Validate skb_headlen() and skip rtw89_traffic_stats_accu() / rtw89_wow_parse_akm() on injected frames
+    headlen_guard = (
+        "\tif (unlikely(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED)) {\n"
+        "\t\tstruct ieee80211_hdr *hdr = (void *)skb->data;\n\n"
+        "\t\tif (skb_headlen(skb) < sizeof(struct ieee80211_cts) ||\n"
+        "\t\t    skb_headlen(skb) < ieee80211_hdrlen(hdr->frame_control))\n"
+        "\t\t\treturn -EINVAL;\n"
+        "\t}\n"
+    )
     stats_m = re.search(
-        r"(\trtw89_traffic_stats_accu\(rtwdev,\s*rtwvif,\s*skb,\s*true(?:,\s*true)?\);\n"
+        r"((?:\trtw89_traffic_stats_accu\([^\n]+,\s*true(?:,\s*true)?\);\n)+"
         r"(?:\trtw89_wow_parse_akm\(rtwdev,\s*skb\);\n)?)",
         src,
     )
@@ -376,20 +471,22 @@ def patch_core_c(core_c_path: Path, pure_mon_rcu: bool, has_txd_ext: bool, has_b
         indented = "".join("\t" + ln for ln in stats_m.group(1).splitlines(True))
         src = (
             src[:stats_m.start()]
+            + headlen_guard
             + "\tif (!(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED)) {\n"
             + indented
             + "\t}\n"
             + src[stats_m.end():]
         )
-        notes.append("guarded rtw89_traffic_stats_accu() and rtw89_wow_parse_akm() on injected frames")
+        notes.append("guarded skb_headlen(), rtw89_traffic_stats_accu(), and rtw89_wow_parse_akm() on injected frames")
     elif wow_only in src:
         src = src.replace(
             wow_only,
-            "\tif (!(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED))\n"
+            headlen_guard
+            + "\tif (!(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED))\n"
             "\t\trtw89_wow_parse_akm(rtwdev, skb);",
             1,
         )
-        notes.append("guarded rtw89_wow_parse_akm() on injected frames")
+        notes.append("guarded skb_headlen() and rtw89_wow_parse_akm() on injected frames")
 
     # 7. rtw89_vif_type_mapping -> map NL80211_IFTYPE_MONITOR to RTW89_SELF_ROLE_AP
     span_map = find_c_function_span(src, "rtw89_vif_type_mapping")
@@ -409,7 +506,7 @@ def patch_core_c(core_c_path: Path, pure_mon_rcu: bool, has_txd_ext: bool, has_b
             src = src[:span_map[1]] + body + src[span_map[2]:]
             notes.append("mapped NL80211_IFTYPE_MONITOR to RTW89_SELF_ROLE_AP in rtw89_vif_type_mapping()")
 
-    # 8. Gate RTS_EN and BE_TXD_BODY6_NO_ACK in TXWD builders when core.h has dis_rts/no_ack
+    # 8. Wire RTS/HW_RTS, BW/GI, TXCNT_LMT, and BE_TXD_BODY6_NO_ACK in TXWD builders when core.h has TXD extensions
     if has_txd_ext:
         rts_old = "\tbool rts_en = !desc_info->is_bmc;"
         if rts_old in src:
@@ -418,6 +515,72 @@ def patch_core_c(core_c_path: Path, pure_mon_rcu: bool, has_txd_ext: bool, has_b
                 "\tbool rts_en = !desc_info->is_bmc && !desc_info->dis_rts;",
             )
             notes.append("gated rts_en on !desc_info->dis_rts in TXWD info4 builders")
+        elif "FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, 1)" in src:
+            src = src.replace(
+                "FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, 1)",
+                "FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, !desc_info->is_bmc && !desc_info->dis_rts)",
+            )
+            notes.append("gated RTW89_TXWD_INFO4_RTS_EN on !is_bmc && !dis_rts")
+
+        if "FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, 1)" in src:
+            src = src.replace(
+                "FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, 1)",
+                "FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, !desc_info->dis_hw_rts)",
+            )
+            notes.append("gated RTW89_TXWD_INFO4_HW_RTS_EN on !desc_info->dis_hw_rts")
+        if "FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, 1)" in src:
+            src = src.replace(
+                "FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, 1)",
+                "FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, !desc_info->dis_hw_rts)",
+            )
+            notes.append("gated BE_TXD_INFO4_HW_RTS_EN on !desc_info->dis_hw_rts")
+
+        # Ensure BW/GI and TXCNT_LMT fields added to core.h on <= 6.18 are programmed into TXWD
+        for fn_name, rate_fp, bw_m, gi_m in (
+            ("rtw89_build_txwd_body7_v1", "FIELD_PREP(RTW89_TXWD_BODY7_DATA_RATE, desc_info->data_rate)", "RTW89_TXWD_BODY7_DATA_BW", "RTW89_TXWD_BODY7_GI_LTF"),
+            ("rtw89_build_txwd_info0", "FIELD_PREP(RTW89_TXWD_INFO0_DATA_RATE, desc_info->data_rate)", "RTW89_TXWD_INFO0_DATA_BW", "RTW89_TXWD_INFO0_GI_LTF"),
+            ("rtw89_build_txwd_body7_v2", "FIELD_PREP(BE_TXD_BODY7_DATARATE, desc_info->data_rate)", "BE_TXD_BODY7_DATA_BW", "BE_TXD_BODY7_GI_LTF"),
+        ):
+            sp = find_c_function_span(src, fn_name)
+            if sp and bw_m in txrx_h_text:
+                b = src[sp[1]:sp[2]]
+                if rate_fp in b and "desc_info->data_bw" not in b:
+                    b = b.replace(
+                        rate_fp,
+                        f"FIELD_PREP({bw_m}, desc_info->data_bw) |\n\t\t    "
+                        f"FIELD_PREP({gi_m}, desc_info->gi_ltf) |\n\t\t    " + rate_fp,
+                        1,
+                    )
+                    src = src[:sp[1]] + b + src[sp[2]:]
+
+        sp_i1 = find_c_function_span(src, "rtw89_build_txwd_info1")
+        if sp_i1:
+            b = src[sp_i1[1]:sp_i1[2]]
+            anchor = "FIELD_PREP(RTW89_TXWD_INFO1_MAX_AGGNUM, desc_info->ampdu_num) |"
+            if anchor in b and "desc_info->tx_cnt_lmt" not in b:
+                b = b.replace(
+                    anchor,
+                    anchor
+                    + "\n\t\t    FIELD_PREP(BIT(31), desc_info->tx_cnt_lmt_en) |"
+                    + "\n\t\t    FIELD_PREP(GENMASK(30, 25), desc_info->tx_cnt_lmt) |",
+                    1,
+                )
+                src = src[:sp_i1[1]] + b + src[sp_i1[2]:]
+
+        sp_i0_v2 = find_c_function_span(src, "rtw89_build_txwd_info0_v2")
+        if sp_i0_v2 and "BE_TXD_INFO0_DATA_TXCNT_LMT" in txrx_h_text:
+            b = src[sp_i0_v2[1]:sp_i0_v2[2]]
+            anchor = "FIELD_PREP(BE_TXD_INFO0_DISDATAFB, desc_info->dis_data_fb) |"
+            if anchor in b and "desc_info->tx_cnt_lmt" not in b:
+                b = b.replace(
+                    anchor,
+                    anchor
+                    + "\n\t\t    FIELD_PREP(BE_TXD_INFO0_DATA_TXCNT_LMT_SEL, desc_info->tx_cnt_lmt_en) |"
+                    + "\n\t\t    FIELD_PREP(BE_TXD_INFO0_DATA_TXCNT_LMT, desc_info->tx_cnt_lmt) |",
+                    1,
+                )
+                src = src[:sp_i0_v2[1]] + b + src[sp_i0_v2[2]:]
+
         if has_be_noack:
             span_b6 = find_c_function_span(src, "rtw89_build_txwd_body6_v2")
             if span_b6:
@@ -441,6 +604,11 @@ def patch_core_c(core_c_path: Path, pure_mon_rcu: bool, has_txd_ext: bool, has_b
                     )
                     src = src[:span_b6[1]] + body + src[span_b6[2]:]
                     notes.append("encoded BE_TXD_BODY6_NO_ACK in rtw89_build_txwd_body6_v2()")
+
+    if not has_set_rx_fltr:
+        src, refined_roc = refine_direct_rx_fltr_restores(src)
+        if refined_roc:
+            notes.append("refined direct rx_fltr restore in core.c (ROC)")
 
     core_c_path.write_text(src, encoding="utf-8", newline="\n")
     return (notes, tx_inj_safe)
@@ -613,9 +781,10 @@ def patch_mac80211_c(mac_c_path: Path, pure_mon_rcu: bool) -> list:
             1,
         )
     mac0_fltr = re.search(
-        r"^(\s*)rtw89_mac_set_rx_fltr\s*\(\s*rtwdev\s*,\s*RTW89_MAC_0\s*,\s*rx_fltr\s*\)\s*;",
+        r"^([ \t]*)(?:rtw89_mac_set_rx_fltr\s*\(\s*rtwdev\s*,\s*RTW89_MAC_0\s*,\s*rx_fltr\s*\)"
+        r"|rtw89_write32_mask\s*\(\s*rtwdev\s*,\s*rtw89_mac_reg_by_idx\([^;]*?RTW89_MAC_0\)\s*,\s*B_AX_RX_FLTR_CFG_MASK\s*,\s*rx_fltr\s*\))\s*;",
         body,
-        re.MULTILINE,
+        re.MULTILINE | re.DOTALL,
     )
     unlock_m = list(re.finditer(r"^(\s*)mutex_unlock\s*\(&rtwdev->mutex\)\s*;", body, re.MULTILINE))
     if mac0_fltr:
@@ -657,19 +826,21 @@ def patch_mac_c(mac_c_path: Path) -> list:
             changed = True
             notes.append("refined rx_fltr in rtw89_mac_set_rx_fltr()")
 
-    span_ax = find_c_function_span(src, "rx_fltr_init_ax")
-    if span_ax:
-        body = src[span_ax[1]:span_ax[2]]
-        old_line = "\tmac_ftlr = rtwdev->hal.rx_fltr;"
-        if old_line in body:
-            body = body.replace(
-                old_line,
-                f"\t/* {MARKER} */\n\tmac_ftlr = rtw89_mon_refine_rx_fltr(rtwdev->hal.rx_fltr);",
-                1,
-            )
-            src = src[:span_ax[1]] + body + src[span_ax[2]:]
-            changed = True
-            notes.append("refined rx_fltr in rx_fltr_init_ax()")
+    for init_fn in ("rx_fltr_init_ax", "rx_fltr_init"):
+        span_ax = find_c_function_span(src, init_fn)
+        if span_ax:
+            body = src[span_ax[1]:span_ax[2]]
+            old_line = "\tmac_ftlr = rtwdev->hal.rx_fltr;"
+            if old_line in body:
+                body = body.replace(
+                    old_line,
+                    f"\t/* {MARKER} */\n\tmac_ftlr = rtw89_mon_refine_rx_fltr(rtwdev->hal.rx_fltr);",
+                    1,
+                )
+                src = src[:span_ax[1]] + body + src[span_ax[2]:]
+                changed = True
+                notes.append(f"refined rx_fltr in {init_fn}()")
+            break
 
     if changed:
         src = insert_include(src)
@@ -700,6 +871,22 @@ def patch_mac_be_c(mac_be_c_path: Path) -> list:
             mac_be_c_path.write_text(src, encoding="utf-8", newline="\n")
             notes.append("refined rx_fltr in rx_fltr_init_be()")
     return notes
+
+
+def patch_fw_c(fw_c_path: Path, has_set_rx_fltr: bool) -> list:
+    if has_set_rx_fltr or not fw_c_path.is_file():
+        return []
+    src = fw_c_path.read_text(encoding="utf-8", errors="replace")
+    if MARKER in src:
+        return ["fw.c already patched"]
+
+    new_src, refined = refine_direct_rx_fltr_restores(src)
+    if not refined:
+        return []
+
+    new_src = f"/* {MARKER} */\n" + insert_include(new_src)
+    fw_c_path.write_text(new_src, encoding="utf-8", newline="\n")
+    return ["refined direct rx_fltr restore in fw.c (HW scan complete)"]
 
 
 def backup_file(p: Path):
@@ -741,20 +928,27 @@ def apply_tree(rtw89_dir: Path) -> dict:
         if target.is_file():
             backup_file(target)
 
-    patched_pure_rcu, patched_txd_ext, changed_core_h = patch_core_h(rtw89_dir / "core.h")
-    patched_txrx_h = patch_txrx_h(rtw89_dir / "txrx.h")
-    has_be_noack = patched_txrx_h or (
-        (rtw89_dir / "txrx.h").is_file()
-        and "BE_TXD_BODY6_NO_ACK" in (rtw89_dir / "txrx.h").read_text(encoding="utf-8", errors="replace")
+    txrx_h_text = (
+        (rtw89_dir / "txrx.h").read_text(encoding="utf-8", errors="replace")
+        if (rtw89_dir / "txrx.h").is_file()
+        else ""
     )
+    patched_pure_rcu, patched_txd_ext, changed_core_h = patch_core_h(rtw89_dir / "core.h")
+    has_be_noack = "BE_TXD_BODY6_NO_ACK" in txrx_h_text
     pure_mon_rcu = feats["pure_mon_rcu"] or patched_pure_rcu
 
     core_notes, tx_inj_safe = patch_core_c(
-        rtw89_dir / "core.c", pure_mon_rcu, patched_txd_ext, has_be_noack
+        rtw89_dir / "core.c",
+        pure_mon_rcu,
+        patched_txd_ext,
+        has_be_noack,
+        feats["has_set_rx_fltr"],
+        txrx_h_text,
     )
     mac80211_notes = patch_mac80211_c(rtw89_dir / "mac80211.c", pure_mon_rcu)
     mac_notes = patch_mac_c(rtw89_dir / "mac.c")
     mac_be_notes = patch_mac_be_c(rtw89_dir / "mac_be.c")
+    fw_notes = patch_fw_c(rtw89_dir / "fw.c", feats["has_set_rx_fltr"])
 
     autoconf = (
         "/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */\n"
@@ -764,10 +958,18 @@ def apply_tree(rtw89_dir: Path) -> dict:
         f"#define RTW89_MON_API_GEN {feats['api_gen']}\n"
         f"#define RTW89_MON_HAS_PURE_VIF {1 if feats['has_pure_mon_vif'] else 0}\n"
         f"#define RTW89_MON_PURE_VIF_RCU {1 if pure_mon_rcu else 0}\n"
+        f"#define RTW89_MON_USES_WIPHY_LOCK {1 if feats['uses_wiphy_lock'] else 0}\n"
         f"#define RTW89_MON_HAS_TX_INJECTION_FUNC {1 if feats['has_tx_injection_func'] else 0}\n"
         f"#define RTW89_MON_TX_INJ_SAFE {1 if tx_inj_safe else 0}\n"
         f"#define RTW89_MON_HAS_RTWDEV_OPS {1 if feats['has_rtwdev_ops'] else 0}\n"
-        f"#define RTW89_MON_HAS_TXD_EXT {1 if patched_txd_ext else 0}\n\n"
+        f"#define RTW89_MON_HAS_TXD_EXT {1 if patched_txd_ext else 0}\n"
+        f"#define RTW89_MON_HAS_SET_RX_FLTR {1 if feats['has_set_rx_fltr'] else 0}\n"
+        f"#define RTW89_MON_HAS_MAC_DEF_RX_FLTR {1 if feats['has_mac_def_rx_fltr'] else 0}\n"
+        f"#define RTW89_MON_ENTITY_STATE_2ARGS {1 if feats['entity_state_2args'] else 0}\n"
+        f"#define RTW89_MON_HAS_CHANCTX_0 {1 if feats['has_chanctx_0'] else 0}\n"
+        f"#define RTW89_MON_HAS_CHIP_GET_CH_DMA {1 if feats['has_chip_get_ch_dma'] else 0}\n"
+        f"#define RTW89_MON_HAS_CHIP_BE {1 if feats['has_chip_be'] else 0}\n"
+        f"#define RTW89_MON_HAS_UPD_WLAN_HDR {1 if feats['has_upd_wlan_hdr'] else 0}\n\n"
         "#endif /* __RTW89_MON_AUTOCONF_H__ */\n"
     )
     (rtw89_dir / "rtw89_mon_autoconf.h").write_text(autoconf, encoding="utf-8", newline="\n")
@@ -778,8 +980,6 @@ def apply_tree(rtw89_dir: Path) -> dict:
 
     if changed_core_h:
         print("[APPLY] core.h: updated RCU / TX descriptor annotations")
-    if patched_txrx_h:
-        print("[APPLY] txrx.h: added BE_TXD_BODY6_NO_ACK")
     if patch_makefile(makefile):
         print(f"[APPLY] Patched {makefile.name} (+= rtw89_mon.o)")
     for n in core_notes:
@@ -790,6 +990,8 @@ def apply_tree(rtw89_dir: Path) -> dict:
         print(f"[APPLY] mac.c: {n}")
     for n in mac_be_notes:
         print(f"[APPLY] mac_be.c: {n}")
+    for n in fw_notes:
+        print(f"[APPLY] fw.c: {n}")
 
     return feats
 

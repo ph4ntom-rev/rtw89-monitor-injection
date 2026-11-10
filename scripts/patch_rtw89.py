@@ -252,21 +252,21 @@ def patch_core_c(core_c_path: Path, pure_mon_rcu: bool, has_txd_ext: bool, has_b
     if not span_tx_type:
         raise RuntimeError("Function rtw89_core_get_tx_type not found in core.c")
     body = src[span_tx_type[1]:span_tx_type[2]]
-    old_cond = (
-        "\tif (ieee80211_is_mgmt(fc) || ieee80211_is_any_nullfunc(fc))\n"
-        "\t\treturn RTW89_CORE_TX_TYPE_MGMT;\n"
-    )
     if "IEEE80211_TX_CTL_INJECTED" not in body:
-        if old_cond not in body:
+        cond_m = re.search(
+            r"(\tif\s*\(ieee80211_is_mgmt\(fc\)\s*\|\|\s*ieee80211_is_(?:any_)?nullfunc\(fc\)\)\n"
+            r"\t\treturn\s+RTW89_CORE_TX_TYPE_MGMT;\n)",
+            body,
+        )
+        if not cond_m:
             raise RuntimeError("Unexpected body in rtw89_core_get_tx_type(); cannot hook injected control frames")
-        body = body.replace(
-            old_cond,
-            old_cond
+        body = (
+            body[:cond_m.end()]
             + "\n"
-            "\tif (unlikely(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED) &&\n"
-            "\t    !ieee80211_is_data(fc))\n"
-            "\t\treturn RTW89_CORE_TX_TYPE_MGMT;\n",
-            1,
+            + "\tif (unlikely(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED) &&\n"
+            + "\t    !ieee80211_is_data(fc))\n"
+            + "\t\treturn RTW89_CORE_TX_TYPE_MGMT;\n"
+            + body[cond_m.end():]
         )
         src = src[:span_tx_type[1]] + body + src[span_tx_type[2]:]
         notes.append("updated rtw89_core_get_tx_type() for injected Control frames")
@@ -459,13 +459,23 @@ def patch_mac80211_c(mac_c_path: Path, pure_mon_rcu: bool) -> list:
     if not span:
         raise RuntimeError("Function rtw89_ops_tx not found in mac80211.c")
     body = src[span[1]:span[2]]
-    if "struct rtw89_vif *rtwvif = vif_to_rtwvif(vif);" not in body:
+    rtwvif_assign = ""
+    if "struct rtw89_vif *rtwvif = vif_to_rtwvif(vif);" in body:
+        body = body.replace(
+            "struct rtw89_vif *rtwvif = vif_to_rtwvif(vif);",
+            "struct rtw89_vif *rtwvif;",
+            1,
+        )
+        rtwvif_assign = "\n\trtwvif = vif_to_rtwvif(vif);"
+    elif "struct rtw89_vif *rtwvif = (struct rtw89_vif *)vif->drv_priv;" in body:
+        body = body.replace(
+            "struct rtw89_vif *rtwvif = (struct rtw89_vif *)vif->drv_priv;",
+            "struct rtw89_vif *rtwvif;",
+            1,
+        )
+        rtwvif_assign = "\n\trtwvif = (struct rtw89_vif *)vif->drv_priv;"
+    elif "rtwvif" in body or "struct ieee80211_vif *vif = info->control.vif;" not in body:
         raise RuntimeError("Unexpected rtwvif declaration in rtw89_ops_tx()")
-    body = body.replace(
-        "struct rtw89_vif *rtwvif = vif_to_rtwvif(vif);",
-        "struct rtw89_vif *rtwvif;",
-        1,
-    )
     m = re.search(r"\n\n", body)
     if not m:
         raise RuntimeError("Could not find declaration boundary in rtw89_ops_tx()")
@@ -494,8 +504,8 @@ def patch_mac80211_c(mac_c_path: Path, pure_mon_rcu: bool) -> list:
         f"\t\t\tieee80211_free_txskb(hw, skb);\n"
         f"\t\t\tgoto out_rcu_unlock;\n"
         f"\t\t}}\n"
-        f"\t}}\n"
-        f"\trtwvif = vif_to_rtwvif(vif);"
+        f"\t}}"
+        f"{rtwvif_assign}"
     )
     body = body[:m.start()] + hook + rest
     src = src[:span[1]] + body + src[span[2]:]
@@ -805,7 +815,7 @@ def main():
     print(f"  Host OS / Release    : {feats['host_os']} ({feats['host_release']})")
     print(
         f"  Detected API Gen     : Gen {feats['api_gen']} "
-        f"({'Linux 6.11+ MLO rtw89_vif_link' if feats['api_gen'] == 2 else 'Linux 6.1-6.10 legacy rtw89_vif'})"
+        f"({'Linux 6.13+ MLO rtw89_vif_link' if feats['api_gen'] == 2 else 'Linux 6.1-6.12 legacy rtw89_vif'})"
     )
     print(f"  pure_monitor_mode_vif: {'present' if feats['has_pure_mon_vif'] else 'absent (using internal ctx)'}")
     print(f"  rtwdev->ops pointer  : {'present' if feats['has_rtwdev_ops'] else 'absent'}")

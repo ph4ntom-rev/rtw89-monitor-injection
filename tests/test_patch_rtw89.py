@@ -47,7 +47,7 @@ rtw89_core_get_tx_type(struct rtw89_dev *rtwdev, struct sk_buff *skb)
 \t__le16 fc = hdr->frame_control;
 
 \t/* comment with fake brace { inside */
-\tif (ieee80211_is_mgmt(fc) || ieee80211_is_any_nullfunc(fc))
+\tif (ieee80211_is_mgmt(fc) || ieee80211_is_nullfunc(fc))
 \t\treturn RTW89_CORE_TX_TYPE_MGMT;
 
 \treturn RTW89_CORE_TX_TYPE_DATA;
@@ -103,7 +103,7 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
 \tstruct rtw89_dev *rtwdev = hw->priv;
 \tstruct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 \tstruct ieee80211_vif *vif = info->control.vif;
-\tstruct rtw89_vif *rtwvif = vif_to_rtwvif(vif);
+\tstruct rtw89_vif *rtwvif = (struct rtw89_vif *)vif->drv_priv;
 
 \tif (!rtwdev)
 \t\treturn;
@@ -368,7 +368,7 @@ class PatchRtw89TestCase(unittest.TestCase):
 
             patched_core = (tree / "core.c").read_text(encoding="utf-8")
             patched_mac = (tree / "mac80211.c").read_text(encoding="utf-8")
-            self.assertIn("if (ieee80211_is_mgmt(fc) || ieee80211_is_any_nullfunc(fc))", patched_core)
+            self.assertIn("if (ieee80211_is_mgmt(fc) || ieee80211_is_nullfunc(fc))", patched_core)
             self.assertIn("IEEE80211_TX_CTL_INJECTED) &&\n\t    !ieee80211_is_data(fc))", patched_core)
             self.assertNotIn("!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc)", patched_core)
             self.assertIn("rtw89_mon_register_hw_caps(rtwdev);", patched_core)
@@ -376,6 +376,7 @@ class PatchRtw89TestCase(unittest.TestCase):
             self.assertIn("if (!(info->flags & IEEE80211_TX_CTL_INJECTED))", patched_core)
             self.assertIn("if (!(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED))", patched_core)
             self.assertNotIn("rtw89_mon_resolve_tx_vif", patched_core)
+            self.assertIn("rtwvif = (struct rtw89_vif *)vif->drv_priv;", patched_mac)
             self.assertIn("rtw89_mon_apply_rx_filter(rtwdev, total_flags);", patched_mac)
             self.assertIn("rtw89_mon_config_channel(rtwdev, changed);", patched_mac)
             self.assertIn("if (!rtwdev)\n\t\tgoto out_rcu_unlock;", patched_mac)
@@ -392,6 +393,24 @@ class PatchRtw89TestCase(unittest.TestCase):
             self.assertEqual((tree / "core.c").read_text(encoding="utf-8"), GEN1_CORE_C)
             self.assertEqual((tree / "mac80211.c").read_text(encoding="utf-8"), GEN1_MAC80211_C)
             self.assertFalse((tree / "rtw89_mon.c").exists())
+
+    def test_gen1_v6_1_no_rtwvif_in_ops_tx(self):
+        v6_1_mac = GEN1_MAC80211_C.replace(
+            "\tstruct rtw89_vif *rtwvif = (struct rtw89_vif *)vif->drv_priv;\n", ""
+        ).replace("\t(void)rtwvif;\n", "")
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / "core.h").write_text(GEN1_CORE_H, encoding="utf-8", newline="\n")
+            (tree / "Makefile").write_text(GEN1_MAKEFILE, encoding="utf-8", newline="\n")
+            (tree / "core.c").write_text(GEN1_CORE_C, encoding="utf-8", newline="\n")
+            (tree / "mac80211.c").write_text(v6_1_mac, encoding="utf-8", newline="\n")
+
+            patch_rtw89.apply_tree(tree)
+            patched_mac = (tree / "mac80211.c").read_text(encoding="utf-8")
+            self.assertIn("vif = rtw89_mon_resolve_tx_vif(rtwdev, vif);", patched_mac)
+            self.assertNotIn("rtwvif =", patched_mac)
+            patch_rtw89.revert_tree(tree)
+            self.assertEqual((tree / "mac80211.c").read_text(encoding="utf-8"), v6_1_mac)
 
     def test_gen2_apply_and_revert(self):
         with tempfile.TemporaryDirectory() as tmp:

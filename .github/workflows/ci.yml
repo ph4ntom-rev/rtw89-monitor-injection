@@ -39,10 +39,10 @@ jobs:
       - name: Unit tests
         run: python3 -m unittest discover -s tests -v
 
-      - name: Cross-LTS patch_rtw89.py apply/revert check (v6.6 Gen 1 & v6.12 Gen 2)
+      - name: Cross-LTS patch_rtw89.py apply/revert check (v6.1, v6.6, v6.12 Gen 1 & v6.18 Gen 2)
         run: |
           set -euo pipefail
-          for tag_gen in "v6.6:1" "v6.12:2"; do
+          for tag_gen in "v6.1:1" "v6.6:1" "v6.12:1" "v6.18:2"; do
             tag="${tag_gen%%:*}"
             gen="${tag_gen##*:}"
             dir="$(mktemp -d)"
@@ -56,16 +56,16 @@ jobs:
             python3 scripts/patch_rtw89.py --rtw89-dir "$dir/drivers/net/wireless/realtek/rtw89" --apply
             grep -qx "#define RTW89_MON_API_GEN ${gen}" \
               "$dir/drivers/net/wireless/realtek/rtw89/rtw89_mon_autoconf.h"
-            if [[ "$tag" == "v6.12" ]]; then
+            if [[ "$tag" == "v6.18" ]]; then
               # Also verify dkms_pre_build.sh accepts both stable and -rc target strings
               dkms_dir="${dir}/dkms_test"
               mkdir -p "${dkms_dir}/src" "${dkms_dir}/scripts"
               cp -a "${dir}/orig/." "${dkms_dir}/"
               cp src/rtw89_mon.c src/rtw89_mon.h "${dkms_dir}/src/"
               cp scripts/patch_rtw89.py scripts/dkms_pre_build.sh "${dkms_dir}/scripts/"
-              echo "6.12" > "${dkms_dir}/RTW89_SOURCE_KERNEL"
-              (cd "${dkms_dir}" && sh scripts/dkms_pre_build.sh "6.12-rc4")
-              if (cd "${dkms_dir}" && sh scripts/dkms_pre_build.sh "6.13.0-generic" 2>/dev/null); then
+              echo "6.18" > "${dkms_dir}/RTW89_SOURCE_KERNEL"
+              (cd "${dkms_dir}" && sh scripts/dkms_pre_build.sh "6.18-rc4")
+              if (cd "${dkms_dir}" && sh scripts/dkms_pre_build.sh "6.19.0-generic" 2>/dev/null); then
                 echo "::error::dkms_pre_build.sh accepted mismatched kernel series"
                 exit 1
               fi

@@ -1,52 +1,130 @@
-From ae2c0002287e9fb98adfc5111feac7ad8fcdbb84 Mon Sep 17 00:00:00 2001
+From bfb14e92ad1f97057c5c2590c7da82c4740a43b4 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
-Date: Sun, 8 Nov 2026 03:02:34 +0500
+Date: Tue, 10 Nov 2026 18:09:00 +0500
 Subject: [PATCH v5 09/10] wifi: rtw89: honor ASSIGN_SEQ and NO_ACK for
  injected frames
 
 For injected frames, rtw89_core_tx_update_injection() only applies
-the radiotap rate. Two more TX flags are ignored:
+the radiotap rate and leaves several TX descriptor settings mismatched
+with the radiotap flags:
 
-- The management path sets hw_ssn_sel/hw_seq_mode, and MLO links set
-  upd_wlan_hdr, so the hardware overwrites the sequence number that
-  user space put into the injected frame even though mac80211 did not
-  request IEEE80211_TX_CTL_ASSIGN_SEQ.
-- IEEE80211_TX_CTL_NO_ACK (e.g. radiotap IEEE80211_RADIOTAP_F_TX_NOACK)
-  does not limit retries, so a frame that will never be acknowledged
-  is retransmitted up to the default retry limit.
+- The management path sets hw_ssn_sel/hw_seq_mode (and MLO links set
+  upd_wlan_hdr), overwriting user-supplied sequence numbers when
+  IEEE80211_TX_CTL_ASSIGN_SEQ is not set, and leaving hw_seq_mode
+  enabled even on injected control frames that have no seq_ctrl field.
+  Conversely, injected data frames leave hw_seq_mode unset when
+  ASSIGN_SEQ is requested on a standalone monitor interface.
+- Unicast frames unconditionally enable RTS_EN in txwd_info4 even when
+  neither IEEE80211_TX_RC_USE_RTS_CTS nor an ACK is expected.
+- IEEE80211_TX_CTL_NO_ACK (e.g. IEEE80211_RADIOTAP_F_TX_NOACK) neither
+  sets BE_TXD_BODY6_NO_ACK on Wi-Fi 7 descriptors nor bounds retries,
+  causing unacknowledged frames to be retransmitted up to the retry
+  limit.
 
-Clear the hardware sequence settings unless ASSIGN_SEQ is set, and
-limit NO_ACK frames to a single transmission attempt.
+Configure hardware sequence assignment according to
+IEEE80211_TX_CTL_ASSIGN_SEQ (and never on control frames), gate RTS_EN
+for injected frames on IEEE80211_TX_RC_USE_RTS_CTS without NO_ACK, and
+set BE_TXD_BODY6_NO_ACK with a single transmission attempt when
+IEEE80211_TX_CTL_NO_ACK is set.
 
 Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---
- drivers/net/wireless/realtek/rtw89/core.c | 13 +++++++++++++
- 1 file changed, 13 insertions(+)
+ drivers/net/wireless/realtek/rtw89/core.c | 34 +++++++++++++++++++----
+ drivers/net/wireless/realtek/rtw89/core.h |  2 ++
+ 2 files changed, 31 insertions(+), 5 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index 94610e3..428f347 100644
+index eea0f0e..93145fc 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
-@@ -1259,6 +1259,19 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
+@@ -1252,12 +1252,36 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
+ 	const struct rtw89_hw_rate_def *hw_rate = &rtw89_hw_rate[rtwdev->chip->chip_gen];
+ 	enum mac80211_rate_control_flags flags = info->control.rates[0].flags;
+ 	struct rtw89_tx_desc_info *desc_info = &tx_req->desc_info;
++	struct ieee80211_hdr *hdr = (void *)tx_req->skb->data;
+ 	const struct rtw89_chan *chan;
+ 	s8 idx = info->control.rates[0].idx;
+ 	u8 nss, mcs;
+ 
  	desc_info->use_rate = true;
  	desc_info->dis_data_fb = true;
- 
-+	/* keep the sequence number supplied by user space */
-+	if (!(info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ)) {
++	desc_info->rts_en = (flags & IEEE80211_TX_RC_USE_RTS_CTS) &&
++			    !desc_info->is_bmc &&
++			    !(info->flags & IEEE80211_TX_CTL_NO_ACK);
++
++	/* Control frames have no seq_ctrl field; otherwise keep the
++	 * sequence number supplied by user space unless ASSIGN_SEQ is set.
++	 */
++	if (!(info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ) ||
++	    ieee80211_is_ctl(hdr->frame_control)) {
 +		desc_info->upd_wlan_hdr = false;
 +		desc_info->hw_ssn_sel = 0;
 +		desc_info->hw_seq_mode = 0;
++	} else {
++		desc_info->hw_ssn_sel = RTW89_MGMT_HW_SSN_SEL;
++		desc_info->hw_seq_mode = RTW89_MGMT_HW_SEQ_MODE;
 +	}
 +
-+	/* no ACK is expected, so do not retry */
++	/* Do not wait for ACK or retry when NO_ACK is requested */
 +	if (info->flags & IEEE80211_TX_CTL_NO_ACK) {
++		desc_info->no_ack = true;
 +		desc_info->tx_cnt_lmt_en = true;
 +		desc_info->tx_cnt_lmt = 1;
 +	}
-+
+ 
  	/* No rate was given in the radiotap header. Management frames
  	 * already carry the rate from rtw89_core_tx_update_mgmt_info(), so
- 	 * only data frames need a fallback.
+@@ -1341,6 +1365,7 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,
+ 
+ 	desc_info->seq = seq;
+ 	desc_info->is_bmc = is_bmc;
++	desc_info->rts_en = !is_bmc;
+ 	desc_info->wd_page = true;
+ 	desc_info->hiq = info->flags & IEEE80211_TX_CTL_SEND_AFTER_DTIM;
+ 	desc_info->upd_wlan_hdr = upd_wlan_hdr;
+@@ -1668,8 +1693,7 @@ static __le32 rtw89_build_txwd_info3(struct rtw89_tx_desc_info *desc_info)
+ 
+ static __le32 rtw89_build_txwd_info4(struct rtw89_tx_desc_info *desc_info)
+ {
+-	bool rts_en = !desc_info->is_bmc;
+-	u32 dword = FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, rts_en) |
++	u32 dword = FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, desc_info->rts_en) |
+ 		    FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, 1) |
+ 		    FIELD_PREP(RTW89_TXWD_INFO4_SW_DEFINE, desc_info->sn);
+ 
+@@ -1811,7 +1835,8 @@ static __le32 rtw89_build_txwd_body5_v2(struct rtw89_tx_desc_info *desc_info)
+ 
+ static __le32 rtw89_build_txwd_body6_v2(struct rtw89_tx_desc_info *desc_info)
+ {
+-	u32 dword = FIELD_PREP(BE_TXD_BODY6_UPD_WLAN_HDR, desc_info->upd_wlan_hdr);
++	u32 dword = FIELD_PREP(BE_TXD_BODY6_NO_ACK, desc_info->no_ack) |
++		    FIELD_PREP(BE_TXD_BODY6_UPD_WLAN_HDR, desc_info->upd_wlan_hdr);
+ 
+ 	return cpu_to_le32(dword);
+ }
+@@ -1873,8 +1898,7 @@ static __le32 rtw89_build_txwd_info2_v3(struct rtw89_tx_desc_info *desc_info)
+ 
+ static __le32 rtw89_build_txwd_info4_v2(struct rtw89_tx_desc_info *desc_info)
+ {
+-	bool rts_en = !desc_info->is_bmc;
+-	u32 dword = FIELD_PREP(BE_TXD_INFO4_RTS_EN, rts_en) |
++	u32 dword = FIELD_PREP(BE_TXD_INFO4_RTS_EN, desc_info->rts_en) |
+ 		    FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, 1);
+ 
+ 	return cpu_to_le32(dword);
+diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
+index d7f3039..2e8863b 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.h
++++ b/drivers/net/wireless/realtek/rtw89/core.h
+@@ -1300,6 +1300,8 @@ struct rtw89_tx_desc_info {
+ 	bool stbc;
+ 	bool ldpc;
+ 	bool upd_wlan_hdr;
++	bool no_ack;
++	bool rts_en;
+ 	bool mlo;
+ 	bool sw_mld;
+ };
 -- 
 2.56.0.windows.4
 

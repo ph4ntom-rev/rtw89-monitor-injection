@@ -6,11 +6,11 @@
  * PATCH v5 rtw89 monitor-mode fixes for distribution trees (best effort):
  *
  * 1. Monitor RX Filter (PATCH v5 3/10):
- *    Retains FIF_CONTROL and FIF_PSPOLL in *new_flags and clears B_AX_A_MC,
- *    B_AX_A_UC_CAM_MATCH, B_AX_A_BC_CAM_MATCH, B_AX_A_MC_LIST_CAM_MATCH,
- *    B_AX_A_BCN_CHK_EN, and B_AX_UID_FILTER_MASK in the local rx_fltr copy
- *    prior to rtw89_mac_set_rx_fltr() (for both RTW89_MAC_0 and RTW89_MAC_1)
- *    without mutating the baseline rtwdev->hal.rx_fltr state.
+ *    Retains FIF_CONTROL and FIF_PSPOLL in *new_flags and clears
+ *    B_AX_A_A1_MATCH, B_AX_A_BC, B_AX_A_MC, B_AX_A_UC_CAM_MATCH,
+ *    B_AX_A_BC_CAM_MATCH, B_AX_A_MC_LIST_CAM_MATCH, B_AX_A_BCN_CHK_EN, and
+ *    B_AX_UID_FILTER_MASK whenever B_AX_SNIFFER_MODE is set across MAC_0/MAC_1
+ *    and scan/ROC/SER restores without mutating baseline rtwdev->hal.rx_fltr.
  *
  * 2. RCU-Protected Monitor VIF Resolution (PATCH v5 4/10 & 6/10):
  *    Publishes the active standalone monitor VIF via RCU across interface
@@ -22,13 +22,15 @@
  *    Ensures NL80211_IFTYPE_MONITOR uses RTW89_NET_TYPE_NO_LINK and
  *    RTW89_SELF_ROLE_AP, routes non-Data frames (including 10-16B Control
  *    frames) via RTW89_CORE_TX_TYPE_MGMT, handles negative rate indices for
- *    both Management/Control and Data frames, preserves software sequence
- *    numbers unless IEEE80211_TX_CTL_ASSIGN_SEQ is set, and bounds retries on
+ *    both Management/Control and Data frames, disables hardware sequence
+ *    generation unless IEEE80211_TX_CTL_ASSIGN_SEQ is set on a non-control
+ *    frame, gates RTS on IEEE80211_TX_RC_USE_RTS_CTS, and bounds retries on
  *    IEEE80211_TX_CTL_NO_ACK.
  *
  * 4. Monitor Restart Channel Restoration (PATCH v5 10/10):
  *    Restores hw->conf.chandef on IEEE80211_CONF_CHANGE_MONITOR when
- *    RTW89_PHY_0 is inactive after rtw89_ops_stop() on non-chanctx chips.
+ *    RTW89_PHY_0 is inactive after rtw89_ops_stop() and chanctx ops are not
+ *    registered (!rtwdev->ops->assign_vif_chanctx).
  */
 
 #include <linux/etherdevice.h>
@@ -52,6 +54,15 @@
  * drivers/net/wireless/realtek/rtw89/reg.h, guarded with #ifndef for
  * older 6.x headers.
  */
+#ifndef B_AX_SNIFFER_MODE
+#define B_AX_SNIFFER_MODE		BIT(0)
+#endif
+#ifndef B_AX_A_A1_MATCH
+#define B_AX_A_A1_MATCH		BIT(1)
+#endif
+#ifndef B_AX_A_BC
+#define B_AX_A_BC			BIT(2)
+#endif
 #ifndef B_AX_A_MC
 #define B_AX_A_MC			BIT(3)
 #endif
@@ -76,6 +87,15 @@
 #ifndef B_AX_UID_FILTER_MASK
 #define B_AX_UID_FILTER_MASK		GENMASK(31, 24)
 #endif
+
+#define RTW89_MON_SNIFFER_CLRMASK	(B_AX_A_A1_MATCH | \
+					 B_AX_A_BC | \
+					 B_AX_A_MC | \
+					 B_AX_A_UC_CAM_MATCH | \
+					 B_AX_A_BC_CAM_MATCH | \
+					 B_AX_A_MC_LIST_CAM_MATCH | \
+					 B_AX_A_BCN_CHK_EN | \
+					 B_AX_UID_FILTER_MASK)
 
 #define RTW89_MON_MAX_DEVS		8
 
@@ -155,17 +175,22 @@ static void rtw89_mon_sync_standalone_vif(struct rtw89_dev *rtwdev,
 #endif
 		spin_lock_irqsave(&rtw89_mon_lock, flags);
 		ctx = rtw89_mon_get_ctx(rtwdev, false);
-		if (ctx) {
-			if (rcu_access_pointer(ctx->mon_vif)) {
-				RCU_INIT_POINTER(ctx->mon_vif, NULL);
-				need_sync = true;
-			}
-			WRITE_ONCE(ctx->rtwdev, NULL);
+		if (ctx && rcu_access_pointer(ctx->mon_vif)) {
+			RCU_INIT_POINTER(ctx->mon_vif, NULL);
+			need_sync = true;
 		}
 		spin_unlock_irqrestore(&rtw89_mon_lock, flags);
 
 		if (need_sync)
 			synchronize_rcu();
+
+		if (count == 0) {
+			spin_lock_irqsave(&rtw89_mon_lock, flags);
+			ctx = rtw89_mon_get_ctx(rtwdev, false);
+			if (ctx && !rcu_access_pointer(ctx->mon_vif))
+				WRITE_ONCE(ctx->rtwdev, NULL);
+			spin_unlock_irqrestore(&rtw89_mon_lock, flags);
+		}
 		return;
 	}
 
@@ -185,18 +210,37 @@ static void rtw89_mon_sync_standalone_vif(struct rtw89_dev *rtwdev,
 #endif
 
 #if RTW89_MON_HAS_PURE_VIF
+	{
+		struct rtw89_vif *old_pure;
+
 #if RTW89_MON_PURE_VIF_RCU
-	rcu_assign_pointer(rtwdev->pure_monitor_mode_vif, sole);
+		old_pure = rcu_dereference_protected(rtwdev->pure_monitor_mode_vif,
+						     true);
+		rcu_assign_pointer(rtwdev->pure_monitor_mode_vif, sole);
 #else
-	WRITE_ONCE(rtwdev->pure_monitor_mode_vif, sole);
+		old_pure = READ_ONCE(rtwdev->pure_monitor_mode_vif);
+		WRITE_ONCE(rtwdev->pure_monitor_mode_vif, sole);
 #endif
+		if (old_pure && old_pure != sole)
+			need_sync = true;
+	}
 #endif
 
 	spin_lock_irqsave(&rtw89_mon_lock, flags);
 	ctx = rtw89_mon_get_ctx(rtwdev, true);
-	if (ctx)
+	if (ctx) {
+		struct ieee80211_vif *old_vif =
+			rcu_dereference_protected(ctx->mon_vif,
+						  lockdep_is_held(&rtw89_mon_lock));
+
+		if (old_vif && old_vif != rtwvif_to_vif(sole))
+			need_sync = true;
 		rcu_assign_pointer(ctx->mon_vif, rtwvif_to_vif(sole));
+	}
 	spin_unlock_irqrestore(&rtw89_mon_lock, flags);
+
+	if (need_sync)
+		synchronize_rcu();
 }
 
 int rtw89_mon_add_vif_post(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif)
@@ -211,20 +255,27 @@ void rtw89_mon_remove_vif_pre(struct rtw89_dev *rtwdev, struct ieee80211_vif *vi
 	rtw89_mon_sync_standalone_vif(rtwdev, vif_to_rtwvif(vif));
 }
 
+u32 rtw89_mon_refine_rx_fltr(u32 rx_fltr)
+{
+	if (rx_fltr & B_AX_SNIFFER_MODE)
+		rx_fltr &= ~RTW89_MON_SNIFFER_CLRMASK;
+
+	return rx_fltr;
+}
+
 void rtw89_mon_prepare_rx_filter(struct rtw89_dev *rtwdev, u32 *rx_fltr,
 				 unsigned int *total_flags)
 {
 	(void)total_flags;
 
-	if (!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR))
+	if (!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR)) {
+		rtwdev->hal.rx_fltr &= ~B_AX_SNIFFER_MODE;
 		return;
+	}
 
-	*rx_fltr &= ~(B_AX_A_MC |
-		      B_AX_A_UC_CAM_MATCH |
-		      B_AX_A_BC_CAM_MATCH |
-		      B_AX_A_MC_LIST_CAM_MATCH |
-		      B_AX_A_BCN_CHK_EN |
-		      B_AX_UID_FILTER_MASK);
+	rtwdev->hal.rx_fltr |= B_AX_SNIFFER_MODE;
+	*rx_fltr |= B_AX_SNIFFER_MODE;
+	*rx_fltr = rtw89_mon_refine_rx_fltr(*rx_fltr);
 }
 
 void rtw89_mon_apply_rx_filter(struct rtw89_dev *rtwdev,
@@ -232,9 +283,12 @@ void rtw89_mon_apply_rx_filter(struct rtw89_dev *rtwdev,
 {
 	u32 rx_fltr;
 
-	if (!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR))
+	if (!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR)) {
+		rtwdev->hal.rx_fltr &= ~B_AX_SNIFFER_MODE;
 		return;
+	}
 
+	rtwdev->hal.rx_fltr |= B_AX_SNIFFER_MODE;
 	rx_fltr = rtwdev->hal.rx_fltr;
 	rtw89_mon_prepare_rx_filter(rtwdev, &rx_fltr, total_flags);
 
@@ -259,7 +313,10 @@ void rtw89_mon_config_channel(struct rtw89_dev *rtwdev, u32 changed)
 	if (!(hw->conf.flags & IEEE80211_CONF_MONITOR))
 		return;
 
-#if RTW89_MON_API_GEN >= 2
+#if RTW89_MON_HAS_RTWDEV_OPS
+	if (rtwdev->ops->assign_vif_chanctx)
+		return;
+#elif RTW89_MON_API_GEN >= 2
 	if (rtwdev->chip->support_chanctx_num)
 		return;
 #endif
@@ -330,7 +387,7 @@ void rtw89_mon_fixup_tx_desc(struct rtw89_dev *rtwdev,
 	if (!(info->flags & IEEE80211_TX_CTL_INJECTED))
 		return;
 
-	if (skb->len < sizeof(struct ieee80211_cts))
+	if (skb_headlen(skb) < sizeof(struct ieee80211_cts))
 		return;
 
 	fc = hdr->frame_control;
@@ -344,39 +401,75 @@ void rtw89_mon_fixup_tx_desc(struct rtw89_dev *rtwdev,
 	 */
 	if (!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc)) {
 		if (ieee80211_is_ctl(fc) ||
-		    skb->len < sizeof(struct ieee80211_hdr_3addr)) {
+		    skb_headlen(skb) < sizeof(struct ieee80211_hdr_3addr)) {
 			desc_info->seq = 0;
 			desc_info->hdr_llc_len = 0;
 			desc_info->agg_en = false;
 		}
-		tx_req->tx_type = RTW89_CORE_TX_TYPE_MGMT;
-		desc_info->qsel = desc_info->hiq ? RTW89_TX_QSEL_B0_HI :
-						   RTW89_TX_QSEL_B0_MGMT;
+		if (tx_req->tx_type != RTW89_CORE_TX_TYPE_MGMT) {
+			u8 mac_idx;
+
 #if RTW89_MON_API_GEN >= 2
-		desc_info->ch_dma = rtw89_chip_get_ch_dma(rtwdev, desc_info->qsel);
+			mac_idx = tx_req->rtwvif_link ?
+				  tx_req->rtwvif_link->mac_idx : RTW89_MAC_0;
 #else
-		desc_info->ch_dma = rtw89_core_get_ch_dma(rtwdev, desc_info->qsel);
+			mac_idx = tx_req->vif ?
+				  vif_to_rtwvif(tx_req->vif)->mac_idx : RTW89_MAC_0;
 #endif
+			tx_req->tx_type = RTW89_CORE_TX_TYPE_MGMT;
+			if (mac_idx == RTW89_MAC_1)
+				desc_info->qsel = desc_info->hiq ?
+						  RTW89_TX_QSEL_B1_HI :
+						  RTW89_TX_QSEL_B1_MGMT;
+			else
+				desc_info->qsel = desc_info->hiq ?
+						  RTW89_TX_QSEL_B0_HI :
+						  RTW89_TX_QSEL_B0_MGMT;
+#if RTW89_MON_API_GEN >= 2
+			desc_info->ch_dma = rtw89_chip_get_ch_dma(rtwdev,
+								  desc_info->qsel);
+#else
+			desc_info->ch_dma = rtw89_core_get_ch_dma(rtwdev,
+								  desc_info->qsel);
+#endif
+		}
 	}
 
-	if (!(info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ)) {
+	if (!(info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ) ||
+	    ieee80211_is_ctl(fc)) {
 		desc_info->upd_wlan_hdr = false;
 		desc_info->hw_ssn_sel = 0;
 		desc_info->hw_seq_mode = 0;
+	} else {
+		desc_info->hw_ssn_sel = RTW89_MGMT_HW_SSN_SEL;
+		desc_info->hw_seq_mode = RTW89_MGMT_HW_SEQ_MODE;
 	}
 
+#if RTW89_MON_HAS_TXD_EXT
+	if (!(info->control.rates[0].flags & IEEE80211_TX_RC_USE_RTS_CTS) ||
+	    desc_info->is_bmc || (info->flags & IEEE80211_TX_CTL_NO_ACK))
+		desc_info->dis_rts = true;
+#endif
+
 	if (info->flags & IEEE80211_TX_CTL_NO_ACK) {
+#if RTW89_MON_HAS_TXD_EXT
+		desc_info->no_ack = true;
+#endif
 		desc_info->tx_cnt_lmt_en = true;
 		desc_info->tx_cnt_lmt = 1;
 	}
 
 	/*
-	 * Unconditionally assign a valid hardware rate when idx < 0 across both
-	 * RTW89_CORE_TX_TYPE_MGMT and RTW89_CORE_TX_TYPE_DATA, preventing an
-	 * unpatched rtw89_core_tx_update_injection() (u8 idx == 0xff) from
-	 * leaving a corrupted data_rate on Management or Control frames.
+	 * Preserve the mgmt basic/NO_CCK rate when rtw89_core_tx_update_injection()
+	 * is absent or patched against negative idx; otherwise assign a valid
+	 * fallback hardware rate when idx < 0.
 	 */
 	if (idx < 0) {
+#if RTW89_MON_TX_INJ_SAFE
+		if (tx_req->tx_type == RTW89_CORE_TX_TYPE_MGMT &&
+		    desc_info->data_rate)
+			return;
+#endif
 		if (info->flags & IEEE80211_TX_CTL_NO_CCK_RATE)
 			desc_info->data_rate = RTW89_HW_RATE_OFDM6;
 		else if (tx_req->tx_type != RTW89_CORE_TX_TYPE_MGMT &&

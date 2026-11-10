@@ -1,34 +1,36 @@
-From 0353a6ce3488b6068cadfc0343f65e14d6badb35 Mon Sep 17 00:00:00 2001
+From a6de002f3da46e52ead9cb003d824ab6ddc81c9d Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
-Date: Sun, 8 Nov 2026 03:01:13 +0500
+Date: Tue, 10 Nov 2026 18:06:00 +0500
 Subject: [PATCH v5 06/10] wifi: rtw89: transmit frames from a standalone
  monitor interface
 
 Frames injected on a monitor interface reach rtw89_ops_tx() either
-with info->control.vif == NULL, or with the virtual monitor vif.
+with info->control.vif == NULL, with a monitor vif, or with a running
+interface matched by addr2.
 
-The latter is racy: ieee80211_del_virtual_monitor() calls
-drv_remove_interface() before it clears local->monitor_sdata, so
-mac80211 may still pass the virtual monitor vif to rtw89_ops_tx()
-after the driver has released its MAC ID and port.
+Passing local->monitor_sdata directly is racy because
+ieee80211_del_virtual_monitor() calls drv_remove_interface() before
+clearing local->monitor_sdata, so mac80211 may still pass the virtual
+monitor vif to rtw89_ops_tx() after the driver has released its MAC ID
+and port.
 
-Resolve both cases through rtwdev->pure_monitor_mode_vif under
-rcu_read_lock(). The pointer is only set while a monitor vif is the
-only interface, and it is cleared with synchronize_rcu() before that
-vif is torn down. Frames are dropped when no such vif exists, which
-keeps the behaviour of the previous fix when a non-monitor interface
-is active, or when they are shorter than their 802.11 header.
+Resolve NULL and monitor vifs through rtwdev->pure_monitor_mode_vif
+under rcu_read_lock(), and verify with skb_headlen() that injected
+frames carry a complete linear 802.11 header before accessing header
+fields in skb->data. Frames from monitor interfaces are dropped when
+no standalone monitor vif exists, preserving the drop behavior while a
+non-monitor interface is active.
 
 Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---
- drivers/net/wireless/realtek/rtw89/mac80211.c | 33 +++++++++++++++----
- 1 file changed, 26 insertions(+), 7 deletions(-)
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 43 ++++++++++++++++---
+ 1 file changed, 36 insertions(+), 7 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index 818629f..0f5f2fb 100644
+index ab06172..771e8c9 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
-@@ -28,28 +28,47 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
+@@ -28,28 +28,57 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
  	struct rtw89_vif *rtwvif;
  	int ret, qsel;
  
@@ -37,19 +39,19 @@ index 818629f..0f5f2fb 100644
 -		return;
 -	}
 +	rcu_read_lock();
- 
--	rtwvif = vif_to_rtwvif(vif);
++
 +	if (unlikely(!vif || vif->type == NL80211_IFTYPE_MONITOR)) {
 +		struct ieee80211_hdr *hdr = (void *)skb->data;
-+
+ 
+-	rtwvif = vif_to_rtwvif(vif);
 +		/* Frames from monitor interfaces are only sent when a monitor
-+		 * vif is the only interface. The pointer is cleared and
++		 * vif is the sole active interface. The pointer is cleared and
 +		 * synchronize_rcu() is called before that vif is removed, so
 +		 * a vif that mac80211 is still tearing down is never used.
 +		 */
 +		rtwvif = rcu_dereference(rtwdev->pure_monitor_mode_vif);
-+		if (!rtwvif || skb->len < sizeof(struct ieee80211_cts) ||
-+		    skb->len < ieee80211_hdrlen(hdr->frame_control)) {
++		if (!rtwvif || skb_headlen(skb) < sizeof(struct ieee80211_cts) ||
++		    skb_headlen(skb) < ieee80211_hdrlen(hdr->frame_control)) {
 +			ieee80211_free_txskb(hw, skb);
 +			goto out;
 +		}
@@ -57,6 +59,16 @@ index 818629f..0f5f2fb 100644
 +		vif = rtwvif_to_vif(rtwvif);
 +		info->control.vif = vif;
 +	} else {
++		if (unlikely(flags & IEEE80211_TX_CTL_INJECTED)) {
++			struct ieee80211_hdr *hdr = (void *)skb->data;
++
++			if (skb_headlen(skb) < sizeof(struct ieee80211_cts) ||
++			    skb_headlen(skb) < ieee80211_hdrlen(hdr->frame_control)) {
++				ieee80211_free_txskb(hw, skb);
++				goto out;
++			}
++		}
++
 +		rtwvif = vif_to_rtwvif(vif);
 +	}
  

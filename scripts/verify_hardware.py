@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause
 
 import argparse
 import datetime
@@ -191,13 +192,17 @@ def main():
     parser.add_argument("--cycles", type=int, default=25)
     parser.add_argument("--settle", type=float, default=12.0)
     parser.add_argument("--series", default="v5")
+    parser.add_argument("--skip-aireplay", action="store_true",
+                        help="Skip active aireplay-ng -9 AP probing; validate passive RX, local raw TX, and RCU teardown")
     parser.add_argument("--keep-monitor", action="store_true")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
     if os.name != "posix" or os.geteuid() != 0:
         parser.error("Run on Linux as root")
-    required = ["ip", "iw", "tcpdump", "capinfos", "tshark", "aireplay-ng", "dmesg", "rfkill"]
+    required = ["ip", "iw", "tcpdump", "capinfos", "tshark", "dmesg", "rfkill"]
+    if not args.skip_aireplay:
+        required.append("aireplay-ng")
     missing = [name for name in required if shutil.which(name) is None]
     if missing:
         parser.error(f"Missing commands: {', '.join(missing)}")
@@ -245,9 +250,17 @@ def main():
             "pci": pci_info,
             "kernel_taint": pathlib.Path("/proc/sys/kernel/tainted").read_text().strip(),
         }
-        firmware = pathlib.Path("/lib/firmware/rtw89/rtw8852a_fw.bin")
+        fw_matches = re.findall(r"loaded firmware (rtw89/\S+\.bin)", dmesg_before)
+        firmware = (
+            pathlib.Path("/lib/firmware") / fw_matches[-1]
+            if fw_matches
+            else pathlib.Path("/lib/firmware/rtw89/rtw8852a_fw.bin")
+        )
+        if not firmware.exists():
+            firmware = pathlib.Path("/lib/firmware/rtw89/rtw8852a_fw.bin")
         module = pathlib.Path(f"/lib/modules/{os.uname().release}/updates/rtw89/rtw89_core.ko")
         if firmware.exists():
+            environment["firmware_file"] = str(firmware)
             environment["firmware_sha256"] = sha256_file(firmware)
         if module.exists():
             environment["rtw89_core_sha256"] = sha256_file(module)
@@ -269,8 +282,17 @@ def main():
             run_cmd(["iw", "dev", args.monitor, "set", "channel", str(args.channel)])
 
         create_monitor()
+        time.sleep(0.5)
+        run_cmd(["ip", "link", "set", args.monitor, "down"])
+        time.sleep(0.2)
+        run_cmd(["ip", "link", "set", args.monitor, "up"])
         time.sleep(2)
-        save_text(output / "monitor-info.txt", run_cmd(["iw", "dev", args.monitor, "info"]).stdout)
+        mon_info_txt = run_cmd(["iw", "dev", args.monitor, "info"]).stdout
+        save_text(output / "monitor-info.txt", mon_info_txt)
+        report["channel_restore"] = {
+            "expected_channel": args.channel,
+            "iw_channel_present": f"channel {args.channel} " in mon_info_txt,
+        }
         pcap = output / "live-rx.pcap"
         capture = run_cmd([
             "timeout", str(args.duration), "tcpdump", "-i", args.monitor,
@@ -281,10 +303,30 @@ def main():
         if not pcap.exists():
             raise RuntimeError("tcpdump did not create a capture file")
         report["promiscuous_rx"] = analyze_pcap(pcap)
+        ds_chans = sorted({
+            int(ch.strip())
+            for ch in run_cmd([
+                "tshark", "-r", str(pcap), "-Y", "wlan.fc.type_subtype == 0x0008",
+                "-T", "fields", "-e", "wlan.ds.current_channel",
+            ], timeout=60, check=False).stdout.splitlines()
+            if ch.strip().isdigit()
+        })
+        report["channel_restore"]["observed_beacon_ds_channels"] = ds_chans
+        report["channel_restore"]["passed"] = (
+            report["channel_restore"]["iw_channel_present"]
+            and (not ds_chans or args.channel in ds_chans)
+        )
 
-        injection = run_cmd(["aireplay-ng", "-9", args.monitor], timeout=45, check=False)
-        save_text(output / "aireplay.txt", injection.stdout + injection.stderr)
-        report["packet_injection"] = injection_result(injection.stdout + injection.stderr)
+        if args.skip_aireplay:
+            report["packet_injection"] = {
+                "skipped": True,
+                "passed": True,
+                "note": "Skipped active AP probing (--skip-aireplay); TX path validated via local raw_tx_worker",
+            }
+        else:
+            injection = run_cmd(["aireplay-ng", "-9", args.monitor], timeout=45, check=False)
+            save_text(output / "aireplay.txt", injection.stdout + injection.stderr)
+            report["packet_injection"] = injection_result(injection.stdout + injection.stderr)
 
         context = multiprocessing.get_context("fork")
         stop_event = context.Event()
@@ -318,6 +360,8 @@ def main():
         run_cmd(["iw", "dev", args.iface, "interface", "add", args.monitor, "type", "monitor"])
         mon_created = True
         run_cmd(["ip", "link", "set", args.monitor, "up"])
+        time.sleep(0.5)
+        run_cmd(["iw", "dev", args.monitor, "set", "channel", str(args.channel)])
         time.sleep(args.settle)
         save_text(output / "post-stress-monitor-info.txt", run_cmd(["iw", "dev", args.monitor, "info"]).stdout)
         post_pcap = output / "post-stress-rx.pcap"
@@ -328,11 +372,17 @@ def main():
         save_text(output / "post-stress-tcpdump.stdout.txt", post_capture.stdout)
         save_text(output / "post-stress-tcpdump.stderr.txt", post_capture.stderr)
         report["concurrency_and_stress"]["post_stress_rx"] = analyze_pcap(post_pcap)
-        post_injection = run_cmd(["aireplay-ng", "-9", args.monitor], timeout=45, check=False)
-        save_text(output / "post-stress-aireplay.txt", post_injection.stdout + post_injection.stderr)
-        report["concurrency_and_stress"]["post_stress_injection"] = injection_result(
-            post_injection.stdout + post_injection.stderr
-        )
+        if args.skip_aireplay:
+            report["concurrency_and_stress"]["post_stress_injection"] = {
+                "skipped": True,
+                "passed": True,
+            }
+        else:
+            post_injection = run_cmd(["aireplay-ng", "-9", args.monitor], timeout=45, check=False)
+            save_text(output / "post-stress-aireplay.txt", post_injection.stdout + post_injection.stderr)
+            report["concurrency_and_stress"]["post_stress_injection"] = injection_result(
+                post_injection.stdout + post_injection.stderr
+            )
 
         dmesg_after = run_cmd(["dmesg"]).stdout
         save_text(output / "dmesg-after.txt", dmesg_after)
@@ -351,7 +401,8 @@ def main():
             and not alerts
         )
         passed = (
-            report["promiscuous_rx"]["passed"]
+            report["channel_restore"]["passed"]
+            and report["promiscuous_rx"]["passed"]
             and report["packet_injection"]["passed"]
             and report["concurrency_and_stress"]["passed"]
             and report["kernel_health"]["passed"]

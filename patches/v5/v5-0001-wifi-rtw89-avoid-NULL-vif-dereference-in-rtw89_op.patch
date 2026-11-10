@@ -1,6 +1,6 @@
-From 429b7b0965af66a890307bec811cf1649ea9be39 Mon Sep 17 00:00:00 2001
+From 38d9130eb47c8b6f37ee61439b3314b608c20530 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
-Date: Sun, 8 Nov 2026 02:59:20 +0500
+Date: Tue, 10 Nov 2026 18:01:00 +0500
 Subject: [PATCH v5 01/10] wifi: rtw89: avoid NULL vif dereference in
  rtw89_ops_tx()
 

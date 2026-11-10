@@ -1,24 +1,27 @@
-From 7976cabc1cbc61220ec10a6344bab44558551271 Mon Sep 17 00:00:00 2001
+From 497e683a2b30a388e2935490697bae856d537993 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
-Date: Sun, 8 Nov 2026 03:00:44 +0500
+Date: Tue, 10 Nov 2026 18:05:00 +0500
 Subject: [PATCH v5 05/10] wifi: rtw89: use AP self role for monitor interfaces
 
 rtw89_vif_type_mapping() leaves net_type and self_role zero for
 NL80211_IFTYPE_MONITOR, i.e. RTW89_NET_TYPE_NO_LINK and
-RTW89_SELF_ROLE_CLIENT. rtw89_mac_vif_init() then sends the join info
-H2C for the monitor MAC ID with this client role.
+RTW89_SELF_ROLE_CLIENT. When rtw89_mac_add_vif() initializes the
+interface, it sends the JoinInfo H2C command with disassoc set
+(op == 1) and this client role.
 
-On RTL8852AE (firmware 0.13.36.2), frames queued on the monitor
-MAC ID are never transmitted in this configuration: raw frames
-injected on a standalone monitor interface are accepted by the driver
-but do not show up on the air. With self_role set to
-RTW89_SELF_ROLE_AP the same frames are transmitted, and aireplay-ng
-injection tests succeed.
+In firmware (verified on RTL8852AE firmware 0.13.36.2), the JoinInfo
+H2C handler treats (self_role != RTW89_SELF_ROLE_AP && op == 1) as a
+disconnect request for an existing station link, which fails role
+lookup on a newly created monitor MAC ID and skips initializing its
+CMAC control table entry (CCTL_ResetByMacid). Frames queued on that
+MAC ID are then silently dropped instead of transmitted.
 
-The firmware behaviour was determined by testing only. self_role is
-consumed solely by the join info and role maintain H2C commands, and
-net_type stays RTW89_NET_TYPE_NO_LINK, so port configuration is not
-affected. Set both fields explicitly for monitor interfaces.
+With self_role set to RTW89_SELF_ROLE_AP and net_type kept at
+RTW89_NET_TYPE_NO_LINK, the JoinInfo H2C handler initializes the
+MAC ID's CMAC control entry and connects the role without enabling
+client TBTT tracking (gated on RTW89_SELF_ROLE_CLIENT) or AP beacon
+transmission (gated on RTW89_NET_TYPE_AP_MODE). Set both fields
+explicitly for monitor interfaces.
 
 Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---

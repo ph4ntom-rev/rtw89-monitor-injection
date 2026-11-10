@@ -36,11 +36,24 @@
 #define RTW89_MON_HAS_TX_INJECTION_FUNC 1
 #endif
 
+#ifndef RTW89_MON_TX_INJ_SAFE
+#define RTW89_MON_TX_INJ_SAFE 1
+#endif
+
+#ifndef RTW89_MON_HAS_RTWDEV_OPS
+#define RTW89_MON_HAS_RTWDEV_OPS 1
+#endif
+
+#ifndef RTW89_MON_HAS_TXD_EXT
+#define RTW89_MON_HAS_TXD_EXT 0
+#endif
+
 void rtw89_mon_register_hw_caps(struct rtw89_dev *rtwdev);
 
 int rtw89_mon_add_vif_post(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif);
 void rtw89_mon_remove_vif_pre(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif);
 
+u32 rtw89_mon_refine_rx_fltr(u32 rx_fltr);
 void rtw89_mon_prepare_rx_filter(struct rtw89_dev *rtwdev, u32 *rx_fltr,
 				 unsigned int *total_flags);
 void rtw89_mon_apply_rx_filter(struct rtw89_dev *rtwdev, unsigned int *total_flags);

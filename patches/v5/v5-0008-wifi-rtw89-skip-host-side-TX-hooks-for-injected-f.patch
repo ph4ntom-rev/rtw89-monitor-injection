@@ -1,6 +1,6 @@
-From 2ec4f8842ce2503ac844ef4cdf3034a9f26a3ffc Mon Sep 17 00:00:00 2001
+From a3089f8d52c96fef4e885b5594ba2faba0e7b46c Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
-Date: Sun, 8 Nov 2026 03:02:10 +0500
+Date: Tue, 10 Nov 2026 18:08:00 +0500
 Subject: [PATCH v5 08/10] wifi: rtw89: skip host-side TX hooks for injected
  frames
 
@@ -8,26 +8,26 @@ Several TX hooks assume frames that were built by the local network
 stack for an associated link:
 
 - rtw89_traffic_stats_accu() and rtw89_core_tx_btc_spec_pkt_notify()
-  look at ip_hdr()/udp_hdr(). For frames injected on a monitor
+  inspect ip_hdr()/udp_hdr(). For frames injected on a monitor
   interface the network header points into the 802.11 header, so
   traffic statistics and BT-coexistence notifications are derived
   from unrelated bytes.
 - rtw89_wow_parse_akm() records the AKM from (Re)Association Request
   frames for WoWLAN, which an injected frame must not change.
-- rtw89_core_tx_update_he_qos_htc() and
-  rtw89_core_tx_update_ampdu_info() modify the frame or descriptor
-  based on the station's HE and aggregation state, while injected
-  frames are expected to be sent as supplied.
+- rtw89_core_tx_update_he_qos_htc(), rtw89_core_tx_update_ampdu_info(),
+  and rtw89_core_txq_check_agg() mutate QoS/HTC headers, enable A-MPDU
+  aggregation, or start/stop BA sessions based on link state, while
+  injected frames are expected to be sent as supplied.
 
 Skip these hooks when IEEE80211_TX_CTL_INJECTED is set.
 
 Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---
- drivers/net/wireless/realtek/rtw89/core.c | 14 +++++++++-----
- 1 file changed, 9 insertions(+), 5 deletions(-)
+ drivers/net/wireless/realtek/rtw89/core.c | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index b4a1eed..94610e3 100644
+index c14e97c..eea0f0e 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -1351,9 +1351,11 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,
@@ -57,6 +57,16 @@ index b4a1eed..94610e3 100644
 +	}
  	rtw89_core_tx_update_desc_info(rtwdev, &tx_req);
  	rtw89_core_tx_wake(rtwdev, &tx_req);
+ 
+@@ -4733,6 +4737,9 @@ static void rtw89_core_txq_check_agg(struct rtw89_dev *rtwdev,
+ 	struct ieee80211_sta *sta = txq->sta;
+ 	struct rtw89_sta *rtwsta = sta_to_rtwsta_safe(sta);
+ 
++	if (unlikely(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED))
++		return;
++
+ 	if (test_bit(RTW89_TXQ_F_FORBID_BA, rtwtxq->flags))
+ 		return;
  
 -- 
 2.56.0.windows.4

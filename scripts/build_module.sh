@@ -105,8 +105,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 ALL_LEAF_CANDIDATES=(
-    rtw89_8852ae rtw89_8852be rtw89_8852bte rtw89_8852ce rtw89_8851be rtw89_8922ae
-    rtw89_8852au rtw89_8852bu rtw89_8851bu
+    rtw89_8852ae rtw89_8852be rtw89_8852bte rtw89_8852ce rtw89_8851be rtw89_8922ae rtw89_8922de
+    rtw89_8852au rtw89_8852bu rtw89_8852cu rtw89_8851bu rtw89_8922au
     rtw_8852ae rtw_8852be rtw_8852ce rtw_8851be
 )
 
@@ -126,9 +126,9 @@ detect_loaded_leaf_modules() {
 unload_rtw89_stack() {
     local mod
     for mod in \
-        rtw89_8852ae rtw89_8852be rtw89_8852bte rtw89_8852ce rtw89_8851be rtw89_8922ae \
-        rtw89_8852au rtw89_8852bu rtw89_8851bu \
-        rtw89_8852a rtw89_8852b rtw89_8852bt rtw89_8852b_common rtw89_8852c rtw89_8851b rtw89_8922a \
+        rtw89_8852ae rtw89_8852be rtw89_8852bte rtw89_8852ce rtw89_8851be rtw89_8922ae rtw89_8922de \
+        rtw89_8852au rtw89_8852bu rtw89_8852cu rtw89_8851bu rtw89_8922au \
+        rtw89_8852a rtw89_8852b rtw89_8852bt rtw89_8852b_common rtw89_8852c rtw89_8851b rtw89_8922a rtw89_8922d \
         rtw89_pci rtw89_usb rtw89_core \
         rtw_8852ae rtw_8852a rtw89pci rtw89core; do
         if lsmod | awk '{print $1}' | grep -qx "${mod}"; then
@@ -304,7 +304,7 @@ elif [[ ${DO_RELOAD} -eq 1 ]]; then
         [[ -f "${RTW89_DIR}/rtw89_pci.ko" ]] && sudo insmod "${RTW89_DIR}/rtw89_pci.ko"
         [[ -f "${RTW89_DIR}/rtw89_usb.ko" ]] && sudo insmod "${RTW89_DIR}/rtw89_usb.ko"
         [[ -f "${RTW89_DIR}/rtw89_8852b_common.ko" ]] && sudo insmod "${RTW89_DIR}/rtw89_8852b_common.ko"
-        for base in rtw89_8852a rtw89_8852b rtw89_8852bt rtw89_8852c rtw89_8851b rtw89_8922a; do
+        for base in rtw89_8852a rtw89_8852b rtw89_8852bt rtw89_8852c rtw89_8851b rtw89_8922a rtw89_8922d; do
             [[ -f "${RTW89_DIR}/${base}.ko" ]] && sudo insmod "${RTW89_DIR}/${base}.ko" || true
         done
         for mod in "${LOADED_LEAF_MODS[@]}"; do

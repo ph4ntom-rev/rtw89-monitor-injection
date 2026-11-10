@@ -1,28 +1,32 @@
-From 4ed9ced7cf832e52c87306122a654e21c8cf7f9c Mon Sep 17 00:00:00 2001
+From f0fbb1fedaed68be9d1134996cf2497233ecfd0e Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
-Date: Sat, 7 Nov 2026 19:50:19 +0500
+Date: Tue, 10 Nov 2026 18:10:00 +0500
 Subject: [PATCH v5 10/10] wifi: rtw89: restore channel after monitor restart
- on non-chanctx chips
+ on non-chanctx devices
 
-Wi-Fi 6 rtw89 chips (such as RTL8852A, RTL8852B, and RTL8851B) have
-support_chanctx_num == 0 and rely on mac80211 chanctx emulation via
-hw->conf.chandef and rtw89_ops_config().
+rtw89_alloc_ieee80211_hw() disables native chanctx callbacks
+(ops->assign_vif_chanctx = NULL) and relies on mac80211 chanctx
+emulation via hw->conf.chandef and rtw89_ops_config() whenever
+chip->support_chanctx_num == 0 or the loaded firmware lacks
+SCAN_OFFLOAD or BEACON_FILTER (for example on RTL8852AE with firmware
+0.13.36.2, where support_chanctx_num == 1 but BEACON_FILTER is absent).
 
 When the last monitor interface is brought down or deleted,
-rtw89_ops_stop() powers down the MAC/BB/RF and clears the
-RTW89_PHY_0 entity state, while mac80211 retains the previous
-local->hw.conf.chandef. When a monitor interface is brought up
-again on the same channel, ieee80211_hw_conf_chan() sees no
-chandef change and omits IEEE80211_CONF_CHANGE_CHANNEL, leaving
-the RF uncalibrated and RX/TX silent until the user manually
-switches to a different channel and back.
+rtw89_ops_stop() powers down the MAC/BB/RF and clears the RTW89_PHY_0
+entity state while mac80211 retains local->hw.conf.chandef. When a
+monitor interface is brought up again on the same channel,
+rtw89_ops_start() sets RTW89_FLAG_POWERON without programming the
+channel (so subsequent rtw89_leave_ips() calls return early), and
+ieee80211_hw_conf_chan() omits IEEE80211_CONF_CHANGE_CHANNEL because
+chandef is unchanged, leaving RX/TX silent until a manual channel
+change.
 
 In rtw89_ops_config(), when IEEE80211_CONF_CHANGE_MONITOR enables
-IEEE80211_CONF_MONITOR on non-chanctx chips and RTW89_PHY_0 is not
-yet active, apply hw->conf.chandef and call rtw89_set_channel().
-On initial bringup where IEEE80211_CONF_CHANGE_CHANNEL has already
-configured RTW89_PHY_0, the entity state check is already true and
-avoids redundant RF calibration.
+IEEE80211_CONF_MONITOR on devices without assign_vif_chanctx and
+RTW89_PHY_0 is not yet active, apply hw->conf.chandef and call
+rtw89_set_channel(). When IEEE80211_CONF_CHANGE_CHANNEL has already
+configured RTW89_PHY_0, the entity state check avoids redundant RF
+calibration.
 
 Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---
@@ -30,10 +34,10 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 11 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index 0f5f2fb..a7fb524 100644
+index 771e8c9..c022961 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
-@@ -124,9 +124,19 @@ static int rtw89_ops_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
+@@ -134,9 +134,19 @@ static int rtw89_ops_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
  	    !rtwdev->scanning)
  		rtw89_enter_ips(rtwdev);
  
@@ -42,7 +46,7 @@ index 0f5f2fb..a7fb524 100644
  		rtw89_physts_parsing_init(rtwdev);
  
 +		if ((hw->conf.flags & IEEE80211_CONF_MONITOR) &&
-+		    !rtwdev->chip->support_chanctx_num &&
++		    !rtwdev->ops->assign_vif_chanctx &&
 +		    !rtw89_get_entity_state(rtwdev, RTW89_PHY_0) &&
 +		    cfg80211_chandef_valid(&hw->conf.chandef)) {
 +			rtw89_config_entity_chandef(rtwdev, RTW89_CHANCTX_0,

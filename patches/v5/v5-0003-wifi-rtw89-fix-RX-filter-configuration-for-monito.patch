@@ -1,45 +1,94 @@
-From 0d5ee36c0c10d2ec5ee4dd9c783514f0036ffb5b Mon Sep 17 00:00:00 2001
+From fc9d02ecb6d074e8f01b3240450226b62e0899e2 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
-Date: Sat, 7 Nov 2026 19:50:18 +0500
+Date: Tue, 10 Nov 2026 18:03:00 +0500
 Subject: [PATCH v5 03/10] wifi: rtw89: fix RX filter configuration for monitor
  mode
 
-When entering monitor mode, rtw89_ops_configure_filter() enables
-B_AX_SNIFFER_MODE in hal.rx_fltr, but leaves hardware multicast,
-address CAM matching, beacon checking, and UID drop masks active
-unless specific FIF_* flags happen to toggle:
+When entering monitor mode, rtw89_ops_configure_filter() sets
+B_AX_SNIFFER_MODE in hal.rx_fltr, but leaves hardware target-address,
+multicast, address CAM, beacon check, and UID drop masks active unless
+specific FIF_* flags happen to toggle:
 
 - B_AX_A_UC_CAM_MATCH and B_AX_A_BC_CAM_MATCH are only cleared when
-  FIF_PROBE_REQ changes, causing unicast and broadcast frames from
-  arbitrary BSSs without a CAM entry to be dropped in hardware.
-- B_AX_A_MC is only cleared when FIF_ALLMULTI (IFF_PROMISC) is set,
-  and B_AX_A_MC_LIST_CAM_MATCH is never cleared, dropping multicast
-  frames when a monitor socket is opened without IFF_PROMISC.
-- B_AX_UID_FILTER_MASK is initialized to 3 in DEFAULT_AX_RX_FLTR
-  (and 15 in DEFAULT_BE_RX_FLTR) via mac->default_rx_fltr and is
-  never cleared by any FIF_* flag.
-- B_AX_A_BCN_CHK_EN should be unconditionally bypassed while
-  monitoring, matching the existing HW scan override.
-- FIF_CONTROL and FIF_PSPOLL are masked out of *new_flags even
-  though rx_fltr_init_ax()/rx_fltr_init_be() forward control frames
-  to the host via R_AX_CTRL_FLTR / R_BE_CTRL_FLTR.
+  FIF_PROBE_REQ changes, dropping unicast and broadcast frames from
+  arbitrary BSSs without a CAM entry in hardware.
+- B_AX_A_MC is only cleared when FIF_ALLMULTI is set, and
+  B_AX_A_MC_LIST_CAM_MATCH is never cleared, dropping multicast frames
+  when a monitor socket is opened without IFF_PROMISC.
+- B_AX_UID_FILTER_MASK is initialized in DEFAULT_AX_RX_FLTR and
+  DEFAULT_BE_RX_FLTR via mac->default_rx_fltr and is never cleared by
+  any FIF_* flag.
+- B_AX_A_A1_MATCH, B_AX_A_BC, and B_AX_A_BCN_CHK_EN must stay cleared
+  whenever B_AX_SNIFFER_MODE is active, including after
+  rtw89_hw_scan_complete_cb(), rtw89_roc_end(), or MAC reinit writes
+  rtwdev->hal.rx_fltr back to R_AX_RX_FLTR_OPT / R_BE_RX_FLTR_OPT.
+- FIF_CONTROL and FIF_PSPOLL are masked out of *new_flags even though
+  rx_fltr_init_ax() and rx_fltr_init_be() already forward control
+  frames to the host via R_AX_CTRL_FLTR / R_BE_CTRL_FLTR.
 
-Retain FIF_CONTROL and FIF_PSPOLL in *new_flags, and clear
-B_AX_A_MC, B_AX_A_UC_CAM_MATCH, B_AX_A_BC_CAM_MATCH,
-B_AX_A_MC_LIST_CAM_MATCH, B_AX_A_BCN_CHK_EN, and
-B_AX_UID_FILTER_MASK in the local rx_fltr variable when
-IEEE80211_CONF_MONITOR is active. Applying the mask to the local
-rx_fltr preserves the baseline rtwdev->hal.rx_fltr state across
-mode transitions, and the bit positions match both R_AX_RX_FLTR_OPT
-and R_BE_RX_FLTR_OPT.
+Retain FIF_CONTROL and FIF_PSPOLL in *new_flags, and add
+rtw89_mac_refine_rx_fltr() to clear the target-address, CAM, beacon,
+and UID drop bits whenever B_AX_SNIFFER_MODE is set without mutating
+the baseline rtwdev->hal.rx_fltr value across mode transitions. The
+bit positions in R_AX_RX_FLTR_OPT and R_BE_RX_FLTR_OPT are identical.
 
 Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---
- drivers/net/wireless/realtek/rtw89/mac80211.c | 11 ++++++++++-
- 1 file changed, 10 insertions(+), 1 deletion(-)
+ drivers/net/wireless/realtek/rtw89/mac.c      |  3 ++-
+ drivers/net/wireless/realtek/rtw89/mac.h      | 15 +++++++++++++++
+ drivers/net/wireless/realtek/rtw89/mac80211.c |  3 ++-
+ drivers/net/wireless/realtek/rtw89/mac_be.c   |  2 +-
+ 4 files changed, 20 insertions(+), 3 deletions(-)
 
+diff --git a/drivers/net/wireless/realtek/rtw89/mac.c b/drivers/net/wireless/realtek/rtw89/mac.c
+index de8598b..470d9e3 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac.c
++++ b/drivers/net/wireless/realtek/rtw89/mac.c
+@@ -2681,6 +2681,7 @@ void rtw89_mac_set_rx_fltr(struct rtw89_dev *rtwdev, u8 mac_idx, u32 rx_fltr)
+ 	u32 reg;
+ 	u32 val;
+ 
++	rx_fltr = rtw89_mac_refine_rx_fltr(rx_fltr);
+ 	reg = rtw89_mac_reg_by_idx(rtwdev, mac->rx_fltr, mac_idx);
+ 
+ 	val = rtw89_read32(rtwdev, reg);
+@@ -2706,7 +2707,7 @@ static int rx_fltr_init_ax(struct rtw89_dev *rtwdev, u8 mac_idx)
+ 		if (ret)
+ 			return ret;
+ 	}
+-	mac_ftlr = rtwdev->hal.rx_fltr;
++	mac_ftlr = rtw89_mac_refine_rx_fltr(rtwdev->hal.rx_fltr);
+ 	plcp_ftlr = B_AX_CCK_CRC_CHK | B_AX_CCK_SIG_CHK |
+ 		    B_AX_LSIG_PARITY_CHK_EN | B_AX_SIGA_CRC_CHK |
+ 		    B_AX_VHT_SU_SIGB_CRC_CHK | B_AX_VHT_MU_SIGB_CRC_CHK |
+diff --git a/drivers/net/wireless/realtek/rtw89/mac.h b/drivers/net/wireless/realtek/rtw89/mac.h
+index 8419bcd..99844b0 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac.h
++++ b/drivers/net/wireless/realtek/rtw89/mac.h
+@@ -1493,6 +1493,21 @@ void rtw89_mac_set_edcca_mode_bands(struct rtw89_dev *rtwdev, bool normal)
+ 	rtw89_mac_set_edcca_mode(rtwdev, RTW89_MAC_1, normal);
+ }
+ 
++static inline u32 rtw89_mac_refine_rx_fltr(u32 rx_fltr)
++{
++	if (rx_fltr & B_AX_SNIFFER_MODE)
++		rx_fltr &= ~(B_AX_A_A1_MATCH |
++			     B_AX_A_BC |
++			     B_AX_A_MC |
++			     B_AX_A_UC_CAM_MATCH |
++			     B_AX_A_BC_CAM_MATCH |
++			     B_AX_A_MC_LIST_CAM_MATCH |
++			     B_AX_A_BCN_CHK_EN |
++			     B_AX_UID_FILTER_MASK);
++
++	return rx_fltr;
++}
++
+ void rtw89_mac_set_rx_fltr(struct rtw89_dev *rtwdev, u8 mac_idx, u32 rx_fltr);
+ void rtw89_mac_update_rts_threshold(struct rtw89_dev *rtwdev);
+ void rtw89_mac_flush_txq(struct rtw89_dev *rtwdev, u32 queues, bool drop);
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index 87f5377..e40a77b 100644
+index 87f5377..e32c2db 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
 @@ -325,7 +325,8 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
@@ -52,21 +101,19 @@ index 87f5377..e40a77b 100644
  
  	if (changed_flags & FIF_ALLMULTI) {
  		if (*new_flags & FIF_ALLMULTI)
-@@ -373,6 +374,14 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
+diff --git a/drivers/net/wireless/realtek/rtw89/mac_be.c b/drivers/net/wireless/realtek/rtw89/mac_be.c
+index fa35caf..e68431b 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac_be.c
++++ b/drivers/net/wireless/realtek/rtw89/mac_be.c
+@@ -1328,7 +1328,7 @@ static int rx_fltr_init_be(struct rtw89_dev *rtwdev, u8 mac_idx)
+ 	rtw89_mac_typ_fltr_opt_be(rtwdev, RTW89_DATA, RTW89_FWD_TO_HOST, mac_idx);
  
- 	rx_fltr = rtwdev->hal.rx_fltr;
+ 	reg = rtw89_mac_reg_by_idx(rtwdev, R_BE_RX_FLTR_OPT, mac_idx);
+-	rtw89_write32(rtwdev, reg, rtwdev->hal.rx_fltr);
++	rtw89_write32(rtwdev, reg, rtw89_mac_refine_rx_fltr(rtwdev->hal.rx_fltr));
  
-+	if (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR)
-+		rx_fltr &= ~(B_AX_A_MC |
-+			     B_AX_A_UC_CAM_MATCH |
-+			     B_AX_A_BC_CAM_MATCH |
-+			     B_AX_A_MC_LIST_CAM_MATCH |
-+			     B_AX_A_BCN_CHK_EN |
-+			     B_AX_UID_FILTER_MASK);
-+
- 	/* mac80211 doesn't configure filter when HW scan, driver need to
- 	 * set by itself. However, during P2P scan might have configure
- 	 * filter to overwrite filter that HW scan needed, so we need to
+ 	reg = rtw89_mac_reg_by_idx(rtwdev, R_BE_PLCP_HDR_FLTR, mac_idx);
+ 	val = B_BE_HE_SIGB_CRC_CHK | B_BE_VHT_MU_SIGB_CRC_CHK |
 -- 
 2.56.0.windows.4
 

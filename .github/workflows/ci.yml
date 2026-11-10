@@ -12,7 +12,7 @@ env:
 
 jobs:
   scripts:
-    name: Scripts and unit tests
+    name: Scripts, unit tests, and cross-LTS integrator checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +38,43 @@ jobs:
 
       - name: Unit tests
         run: python3 -m unittest discover -s tests -v
+
+      - name: Cross-LTS patch_rtw89.py apply/revert check (v6.6 Gen 1 & v6.12 Gen 2)
+        run: |
+          set -euo pipefail
+          for tag_gen in "v6.6:1" "v6.12:2"; do
+            tag="${tag_gen%%:*}"
+            gen="${tag_gen##*:}"
+            dir="$(mktemp -d)"
+            git -C "$dir" init -q
+            git -C "$dir" remote add origin https://github.com/torvalds/linux.git
+            git -C "$dir" sparse-checkout init --cone
+            git -C "$dir" sparse-checkout set drivers/net/wireless/realtek/rtw89
+            git -C "$dir" fetch -q --depth 1 --filter=blob:none origin "refs/tags/${tag}"
+            git -C "$dir" checkout -q FETCH_HEAD
+            cp -a "$dir/drivers/net/wireless/realtek/rtw89" "${dir}/orig"
+            python3 scripts/patch_rtw89.py --rtw89-dir "$dir/drivers/net/wireless/realtek/rtw89" --apply
+            grep -qx "#define RTW89_MON_API_GEN ${gen}" \
+              "$dir/drivers/net/wireless/realtek/rtw89/rtw89_mon_autoconf.h"
+            if [[ "$tag" == "v6.12" ]]; then
+              # Also verify dkms_pre_build.sh accepts both stable and -rc target strings
+              dkms_dir="${dir}/dkms_test"
+              mkdir -p "${dkms_dir}/src" "${dkms_dir}/scripts"
+              cp -a "${dir}/orig/." "${dkms_dir}/"
+              cp src/rtw89_mon.c src/rtw89_mon.h "${dkms_dir}/src/"
+              cp scripts/patch_rtw89.py scripts/dkms_pre_build.sh "${dkms_dir}/scripts/"
+              echo "6.12" > "${dkms_dir}/RTW89_SOURCE_KERNEL"
+              (cd "${dkms_dir}" && sh scripts/dkms_pre_build.sh "6.12-rc4")
+              if (cd "${dkms_dir}" && sh scripts/dkms_pre_build.sh "6.13.0-generic" 2>/dev/null); then
+                echo "::error::dkms_pre_build.sh accepted mismatched kernel series"
+                exit 1
+              fi
+            fi
+            python3 scripts/patch_rtw89.py --rtw89-dir "$dir/drivers/net/wireless/realtek/rtw89" --revert
+            diff -r "$dir/drivers/net/wireless/realtek/rtw89" "${dir}/orig"
+            rm -rf "$dir"
+            echo "OK: ${tag} (API Gen ${gen})"
+          done
 
   kernel:
     name: Kernel build (W=1, sparse) and checkpatch
@@ -65,9 +102,14 @@ jobs:
         working-directory: linux
         run: |
           make -s defconfig
-          ./scripts/config -e CFG80211 -e MAC80211 -e WLAN -e WLAN_VENDOR_REALTEK \
-            -m RTW89 -m RTW89_8852AE -m RTW89_8852BE -m RTW89_8852CE -m RTW89_8851BE \
-            -m RTW89_8852BTE -m RTW89_8922AE -e RTW89_DEBUGMSG -e PROVE_LOCKING
+          ./scripts/config -e PCI -e USB -e CFG80211 -e MAC80211 -e WLAN -e WLAN_VENDOR_REALTEK \
+            -m RTW89 -m RTW89_PCI -m RTW89_USB \
+            -m RTW89_8852AE -m RTW89_8852AU \
+            -m RTW89_8852BE -m RTW89_8852BU -m RTW89_8852BTE \
+            -m RTW89_8852CE -m RTW89_8852CU \
+            -m RTW89_8851BE -m RTW89_8851BU \
+            -m RTW89_8922AE -m RTW89_8922AU -m RTW89_8922DE \
+            -e RTW89_DEBUGMSG -e RTW89_DEBUGFS -e PROVE_LOCKING
           make -s olddefconfig
           make -s -j"$(nproc)" modules_prepare
           cp -a drivers/net/wireless/realtek/rtw89 ../pristine-rtw89

@@ -450,6 +450,110 @@ class PatchRtw89TestCase(unittest.TestCase):
             self.assertEqual((tree / "core.c").read_text(encoding="utf-8"), GEN2_CORE_C)
             self.assertEqual((tree / "mac80211.c").read_text(encoding="utf-8"), GEN2_MAC80211_C)
 
+    def test_gen2_with_mac_c_rtwdev_ops_txq_and_txd_ext(self):
+        ext_core_h = (
+            "/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */\n"
+            "#ifndef __RTW89_CORE_H__\n"
+            "#define __RTW89_CORE_H__\n"
+            "struct rtw89_tx_desc_info {\n"
+            "\tu16 pkt_size;\n"
+            "\tbool is_bmc;\n"
+            "};\n"
+            "struct rtw89_vif_link {\n"
+            "\tu8 mac_id;\n"
+            "};\n"
+            "struct rtw89_dev {\n"
+            "\tconst struct ieee80211_ops *ops;\n"
+            "\tstruct rtw89_vif *pure_monitor_mode_vif;\n"
+            "};\n"
+            "#endif\n"
+        )
+        ext_txrx_h = "#define BE_TXD_BODY6_NO_ACK BIT(12)\n#define BE_TXD_BODY6_UPD_WLAN_HDR BIT(13)\n"
+        ext_core_c = (
+            GEN2_CORE_C
+            + "\nstatic void rtw89_core_txq_check_agg(struct rtw89_dev *rtwdev,\n"
+            "\t\t\t\t     struct rtw89_txq *rtwtxq,\n"
+            "\t\t\t\t     struct sk_buff *skb)\n"
+            "{\n"
+            "\tif (test_bit(RTW89_TXQ_F_FORBID_BA, &rtwtxq->flags))\n"
+            "\t\treturn;\n"
+            "}\n\n"
+            "static __le32 rtw89_build_txwd_info4(struct rtw89_tx_desc_info *desc_info)\n"
+            "{\n"
+            "\tbool rts_en = !desc_info->is_bmc;\n\n"
+            "\treturn cpu_to_le32(rts_en);\n"
+            "}\n\n"
+            "static __le32 rtw89_build_txwd_body6_v2(struct rtw89_tx_desc_info *desc_info)\n"
+            "{\n"
+            "\tu32 dword = FIELD_PREP(BE_TXD_BODY6_UPD_WLAN_HDR, desc_info->upd_wlan_hdr);\n\n"
+            "\treturn cpu_to_le32(dword);\n"
+            "}\n"
+        )
+        ext_mac_c = (
+            '// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause\n'
+            '#include "core.h"\n\n'
+            "static int rx_fltr_init_ax(struct rtw89_dev *rtwdev, u8 mac_idx)\n"
+            "{\n"
+            "\tu32 mac_ftlr;\n\n"
+            "\tmac_ftlr = rtwdev->hal.rx_fltr;\n"
+            "\treturn (int)mac_ftlr;\n"
+            "}\n\n"
+            "void rtw89_mac_set_rx_fltr(struct rtw89_dev *rtwdev, u8 mac_idx, u32 rx_fltr)\n"
+            "{\n"
+            "\tu32 reg = 0;\n\n"
+            "\t(void)reg;\n"
+            "}\n"
+        )
+        ext_mac_be_c = (
+            '// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause\n'
+            '#include "core.h"\n\n'
+            "static int rx_fltr_init_be(struct rtw89_dev *rtwdev, u8 mac_idx)\n"
+            "{\n"
+            "\tu32 reg = 0;\n\n"
+            "\trtw89_write32(rtwdev, reg, rtwdev->hal.rx_fltr);\n"
+            "\treturn 0;\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / "core.h").write_text(ext_core_h, encoding="utf-8", newline="\n")
+            (tree / "txrx.h").write_text(ext_txrx_h, encoding="utf-8", newline="\n")
+            (tree / "Makefile").write_text(GEN1_MAKEFILE, encoding="utf-8", newline="\n")
+            (tree / "core.c").write_text(ext_core_c, encoding="utf-8", newline="\n")
+            (tree / "mac80211.c").write_text(GEN2_MAC80211_C, encoding="utf-8", newline="\n")
+            (tree / "mac.c").write_text(ext_mac_c, encoding="utf-8", newline="\n")
+            (tree / "mac_be.c").write_text(ext_mac_be_c, encoding="utf-8", newline="\n")
+
+            patch_rtw89.apply_tree(tree)
+            autoconf = (tree / "rtw89_mon_autoconf.h").read_text(encoding="utf-8")
+            self.assertIn("#define RTW89_MON_HAS_RTWDEV_OPS 1", autoconf)
+            self.assertIn("#define RTW89_MON_HAS_TXD_EXT 1", autoconf)
+            self.assertIn("#define RTW89_MON_TX_INJ_SAFE 1", autoconf)
+
+            patched_core = (tree / "core.c").read_text(encoding="utf-8")
+            self.assertIn("bool rts_en = !desc_info->is_bmc && !desc_info->dis_rts;", patched_core)
+            self.assertIn("FIELD_PREP(BE_TXD_BODY6_NO_ACK, desc_info->no_ack)", patched_core)
+            self.assertIn("rtw89_core_txq_check_agg", patched_core)
+            self.assertIn("rtw89_mon_refine_rx_fltr(rx_fltr)", (tree / "mac.c").read_text(encoding="utf-8"))
+            self.assertIn("rtw89_mon_refine_rx_fltr(rtwdev->hal.rx_fltr)", (tree / "mac_be.c").read_text(encoding="utf-8"))
+
+            patch_rtw89.revert_tree(tree)
+            self.assertEqual((tree / "core.h").read_text(encoding="utf-8"), ext_core_h)
+            self.assertEqual((tree / "core.c").read_text(encoding="utf-8"), ext_core_c)
+            self.assertEqual((tree / "mac.c").read_text(encoding="utf-8"), ext_mac_c)
+            self.assertEqual((tree / "mac_be.c").read_text(encoding="utf-8"), ext_mac_be_c)
+
+    def test_fail_fast_on_missing_mandatory_hooks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / "core.h").write_text(GEN2_CORE_H, encoding="utf-8", newline="\n")
+            (tree / "Makefile").write_text(GEN1_MAKEFILE, encoding="utf-8", newline="\n")
+            (tree / "core.c").write_text(GEN2_CORE_C, encoding="utf-8", newline="\n")
+            broken_mac = GEN2_MAC80211_C.replace("rtw89_ops_tx", "rtw89_ops_tx_renamed")
+            (tree / "mac80211.c").write_text(broken_mac, encoding="utf-8", newline="\n")
+            with self.assertRaises(RuntimeError):
+                patch_rtw89.apply_tree(tree)
+
     def test_v4_patch_series_metadata_and_hygiene(self):
         v4_dir = REPO_ROOT / "patches" / "v4"
         self.assertTrue(v4_dir.is_dir(), "patches/v4 directory missing")
@@ -496,6 +600,7 @@ class PatchRtw89TestCase(unittest.TestCase):
         cover = patches[0].read_text(encoding="utf-8")
         self.assertNotIn("*** SUBJECT HERE ***", cover)
         self.assertNotIn("*** BLURB HERE ***", cover)
+        self.assertNotIn("TODO", cover)
         self.assertIn("base-commit: d48723711bae9b8cdc56719c448ba42fef28cbee", cover)
 
         def body(idx):
@@ -507,15 +612,35 @@ class PatchRtw89TestCase(unittest.TestCase):
         self.assertIn("Fixes: e96abe4fd7cd", body(2))
         self.assertIn("+\ts8 idx = info->control.rates[0].idx;", body(2))
 
-        # 4/10 is a plain RCU conversion without the v4 recalc helper
-        self.assertIn("rtw89_set_pure_monitor_vif", body(4))
-        self.assertNotIn("rtw89_recalc_pure_monitor_vif", body(4))
-        self.assertIn("No functional change intended.", body(4))
+        # 3/10 refines rx_fltr across mac.h, mac.c, mac_be.c and retains control/pspoll flags
+        self.assertIn("rtw89_mac_refine_rx_fltr", body(3))
+        self.assertIn("FIF_CONTROL | FIF_PSPOLL", body(3))
 
-        # 7/10 only reroutes injected control frames
+        # 4/10 protects pure_monitor_mode_vif with RCU and recalculates sole monitor vif
+        self.assertIn("rtw89_set_pure_monitor_vif", body(4))
+        self.assertIn("rtw89_recalc_pure_monitor_vif", body(4))
+        self.assertIn("synchronize_rcu()", body(4))
+
+        # 6/10 and 7/10 use skb_headlen(skb) and only reroute injected control frames
+        self.assertIn("skb_headlen(skb)", body(6))
         p7 = body(7)
+        self.assertIn("skb_headlen(skb)", p7)
         self.assertIn("IEEE80211_TX_CTL_INJECTED) &&", p7)
         self.assertNotIn("+\tif (!ieee80211_is_data(fc) || ieee80211_is_any_nullfunc(fc))", p7)
+
+        # 8/10 guards TXQ aggregation, stats, WoW AKM, and BTC hooks on injected frames
+        self.assertIn("rtw89_core_txq_check_agg", body(8))
+
+        # 9/10 guards control frames against hw_seq_mode, gates RTS, and sets BE_TXD_BODY6_NO_ACK
+        p9 = body(9)
+        self.assertIn("ieee80211_is_ctl(hdr->frame_control)", p9)
+        self.assertIn("IEEE80211_TX_RC_USE_RTS_CTS", p9)
+        self.assertIn("BE_TXD_BODY6_NO_ACK", p9)
+
+        # 10/10 gates channel restoration on !rtwdev->ops->assign_vif_chanctx
+        p10_diff = body(10).split("\ndiff --git ", 1)[1]
+        self.assertIn("!rtwdev->ops->assign_vif_chanctx", p10_diff)
+        self.assertNotIn("support_chanctx_num", p10_diff)
 
         for p in patches[1:]:
             content = p.read_text(encoding="utf-8")

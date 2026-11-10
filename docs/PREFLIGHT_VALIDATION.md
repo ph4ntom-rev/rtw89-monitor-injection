@@ -6,73 +6,83 @@
 | :--- | :--- |
 | v3 | Posted to linux-wireless on 2026-11-05 ([lore](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/)), waiting for review. |
 | v4 | Never sent. Kept in `patches/v4/` for reference. |
-| v5 | `patches/v5/`, 10 patches against `torvalds/linux` `d48723711bae`. To be sent after the v3 review and after the hardware checks in section 3 pass on v5. |
+| v5 | `patches/v5/`, 10 patches against `torvalds/linux` `d48723711bae`. Firmware-verified and runtime-validated on RTL8852AE; ready to send after v3 review. |
 
-## 2. Static checks for v5
+## 2. Static & CI checks for v5
 
-Run locally against `v7.4-rc1`, whose rtw89 sources are identical to the series base,
-and repeated by [CI](../.github/workflows/ci.yml) against the base commit:
+Run locally against `v7.4-rc1` (`d48723711bae9b8cdc56719c448ba42fef28cbee`) and repeated
+automatically by [CI](../.github/workflows/ci.yml):
 
 | Check | Result |
 | :--- | :--- |
 | `git am` of all 10 patches | applies cleanly |
-| Build after each patch (bisectability) | all 10 steps build |
-| `make W=1 C=1` (gcc 15, sparse) on `drivers/net/wireless/realtek/rtw89` | 0 warnings before and after the series |
-| `checkpatch.pl --strict` | 0 errors, 0 warnings, 0 checks (apart from "unknown commit id" in a shallow clone; the ids in the `Fixes:` tags exist upstream) |
-| `patch_rtw89.py --apply` on the base, external build with `W=1 C=1` | builds without warnings, `--revert` restores the tree |
-| DKMS flow (`dkms_prepare.sh`, `dkms_pre_build.sh`) with stubbed `dkms` | correct module list, `BUILD_EXCLUSIVE_KERNEL` matches only the source series, mismatched kernels are rejected |
+| Build after each patch (bisectability) | all 10 steps build cleanly (PCIe, USB, AX, and BE modules enabled) |
+| `make W=1 C=1` (`sparse` + `CONFIG_PROVE_LOCKING=y`) | 0 new compiler or sparse warnings across the series |
+| `checkpatch.pl --strict` | 0 errors, 0 warnings, 0 checks across `v5-0001`..`v5-0010` |
+| `patch_rtw89.py --apply` on `v6.6` (Gen 1), `v6.12` (Gen 2), and `v7.4-rc1` | hooks apply cleanly without warnings; `--revert` restores trees byte-for-byte |
+| DKMS flow (`dkms_prepare.sh`, `dkms_pre_build.sh`) | handles stable and `-rc` kernel versions (`BUILD_EXCLUSIVE_KERNEL`), rejects mismatched series |
 
-## 3. Hardware results (obtained with v4)
+## 3. Firmware verification (`RTL8852AE` `0.13.36.2`, commit `52acc807`)
 
-> [!WARNING]
-> These results were measured with the **v4** code. v5 differs from v4 in how
-> non-injected control frames are classified (patch 7), in dropping
-> `rtw89_recalc_pure_monitor_vif()` (patch 4), and in the NULL vif fix being a separate
-> patch. Re-run the reproducer below on v5 and update this table before sending v5.
+All firmware-facing assumptions in patches 3, 5, and 10 were verified statically against
+unmodified `linux-firmware` (`rtw89/rtw8852a_fw-1.bin`, SHA-256
+`fdb5513cf7372440d7980a61aa4b753b192b056734a978458ae4a4ef7f4b2c1e`):
 
-- Hardware: Realtek RTL8852AE PCIe (`10ec:8852`)
-- Firmware: `rtw89/rtw8852a_fw.bin` 0.13.36.2 (unmodified `linux-firmware`)
-- Kernel: Linux 7.1.5 (Kali)
+- **JoinInfo H2C role handling (patch 5):** `H2C_FUNC_MAC_JOININFO_Handler` routes
+  `(self_role != RTW89_SELF_ROLE_AP && op == 1)` (`net_type == RTW89_NET_TYPE_NO_LINK`)
+  into the role-disconnect path, which returns early without calling `CCTL_ResetByMacid` on
+  a newly created monitor MAC ID. Using `RTW89_SELF_ROLE_AP` with `RTW89_NET_TYPE_NO_LINK`
+  initializes the MAC ID's CMAC control entry (`CCTL_ResetByMacid` + role connect) while
+  skipping client TBTT tracking and AP beacon transmission.
+- **RX filter across scan/ROC/MAC init (patch 3):** Firmware scan offload pauses/restores
+  `0xCE06`, while host `rtw89_hw_scan_complete_cb()`, `rtw89_roc_end()`, `rx_fltr_init_ax()`,
+  and `rx_fltr_init_be()` rewrite `rtwdev->hal.rx_fltr` to `R_AX_RX_FLTR_OPT` (`0xCE20`) /
+  `R_BE_RX_FLTR_OPT`. Refining `rx_fltr` whenever `B_AX_SNIFFER_MODE` (`BIT(0)`) is set
+  preserves monitor reception across all filter restores without altering non-monitor state.
+- **Channel context emulation on RTL8852AE (patch 10):** `rtw8852a_chip_info` sets
+  `support_chanctx_num = 1`, but firmware `0.13.36.2` only advertises `SCAN_OFFLOAD` and
+  `TX_WAKE` (no `BEACON_FILTER`), so `rtw89_alloc_ieee80211_hw()` leaves
+  `rtwdev->ops->assign_vif_chanctx == NULL` (`no_chanctx = true`). Gating channel
+  restoration on `!rtwdev->ops->assign_vif_chanctx` properly covers RTL8852AE.
 
-| Check | v4 result |
+## 4. Hardware results on `v5` (measured 2026-11-10)
+
+- **Hardware:** Realtek RTL8852AE PCIe (`10ec:8852`)
+- **Firmware:** `rtw89/rtw8852a_fw-1.bin` `0.13.36.2` (`52acc807`, unmodified `linux-firmware`)
+- **Kernel:** Linux `7.1.5+kali-amd64` (`SMP PREEMPT_DYNAMIC x86_64`)
+
+| Check | `v5` result |
 | :--- | :--- |
-| Promiscuous RX, 8 s on channel 5 (2432 MHz) | 21,705 frames (127 beacons, 2,413 BlockAck, 1,390 RTS, 3,147 CTS, 2,797 ACK, 11,282 QoS data, 211 null data) |
-| `aireplay-ng -9` | 10/10, average 12.34 ms |
-| Raw TX: 10-byte ACK, 16-byte RTS, 24-byte association request, SN 1337, no radiotap rate | all transmitted, no kernel warnings |
-| 25 `iw dev mon0 del/add` cycles with concurrent raw TX | 13,579 frames sent, no warnings |
-| RX after the stress test without `iw set channel` | 5,248 frames right after `ip link set mon0 up` |
-| `aireplay-ng -9` after the stress test | 30/30, average 15.56 ms |
-| ftrace of `rtw89_set_channel` / `rtw89_chip_rfk_channel` | one call each for cold start, `down/up` and `del/add/up` |
-| `dmesg` (WARN, oops, lockdep) and station reconnect | no new messages, `wlan0` reconnected |
+| Monitor restart channel restore (`down` -> `up` on ch 7 without `iw set channel`) | `PASS`: all captured beacons carry DS channel `7`; `ftrace` confirms 1 call each to `rtw89_set_channel` and `rtw89_chip_rfk_channel` |
+| Promiscuous RX, 8 s on channel 7 (2442 MHz) right after `down/up` | `PASS`: 612 frames with Radiotap (202 beacons, 8 probe req, 12 probe resp, 98 BlockAck, 90 CTS, 30 ACK, 157 QoS data) |
+| Concurrent `wlan0` (managed UP) + `mon0` NULL-vif guard & standalone promotion | `PASS`: 5/5 frames dropped safely (`rtw89_ops_tx = 5`, `rtw89_core_tx_write = 0`) while `wlan0` UP; 5/5 transmitted (`rtw89_core_tx_write = 5`) immediately after `ip link set wlan0 down` |
+| Raw TX descriptors (`02:00:00:88:52:ae`): 10B ACK & 16B RTS (`idx = -1`, default flags), 24B Data & AssocReq (`SN = 1337`, `NOSEQ \| NOACK`) | `PASS`: all DMA completions echoed intact (`10B 0x00d4`, `16B 0x00b4`, exact `SN = 1337` preserved on Data and AssocReq) |
+| 25 `iw dev mon0 del/add` RCU stress cycles with concurrent raw TX | `PASS`: 11,628 raw TX frames sent across 25/25 cycles, 0 kernel alerts |
+| Post-stress promiscuous RX, 8 s on channel 7 | `PASS`: 1,398 frames (203 beacons, 389 BlockAck, 249 CTS, 13 data, 537 QoS data) |
+| `dmesg` (`BUG`, `WARNING`, `Oops`, RCU stall, `rtw89` errors) | `PASS`: 0 new alerts |
 
-Additional checks that should be done on v5, because v5 changes this behaviour:
-
-- Normal station traffic with A-MPDU (BlockAckReq frames are sent by mac80211 through
-  the data path again, as upstream).
-- Injection of control frames still uses the management queue.
-
-## 4. Reproducer
+## 5. Reproducer
 
 Run on an isolated test machine as root:
 
 ```bash
 sudo python3 scripts/verify_hardware.py \
   --series v5 \
-  --channel 5 \
+  --channel 7 \
   --duration 8 \
   --cycles 25 \
-  --settle 1.5 \
+  --settle 2.0 \
   --output /tmp/rtw89-v5-validation
 ```
 
-The script brings managed interfaces down, checks RX of control, management and data
-frames, runs `aireplay-ng -9`, sends raw `AF_PACKET` frames (null data, 10-byte ACK,
-16-byte RTS) during 25 delete/add cycles, checks that RX works after `ip link set mon0 up`
-without `iw set channel`, and restores the previous interface state at the end.
+Pass `--skip-aireplay` to omit active broadcast/AP `aireplay-ng -9` probing and validate
+passive RX, `down/up` channel restoration, local raw `AF_PACKET` TX (`02:00:00:88:52:ae`:
+null data, 10-byte ACK, 16-byte RTS), and 25 delete/add RCU teardown cycles only.
 
-## 5. Scope
+## 6. Scope
 
-- Injection needs a standalone monitor interface. While a station or AP interface is up,
-  injected frames are dropped.
-- Only RTL8852AE was runtime-tested. RTL8852BE/CE, RTL8851BE, RTL8922AE, USB devices and
-  DBCC (`RTW89_MAC_1`) use the same code paths but were not tested on hardware.
+- Injection requires a standalone monitor interface. While a station or AP interface is up,
+  injected frames are dropped cleanly.
+- Only RTL8852AE was runtime-tested. RTL8852BE/CE/BTE, RTL8851BE, RTL8922AE/DE, USB devices,
+  and DBCC (`RTW89_MAC_1`) compile cleanly and share the same code paths, but were not
+  tested on hardware.

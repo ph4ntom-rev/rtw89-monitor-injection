@@ -67,7 +67,7 @@ RTW="${TREE}/drivers/net/wireless/realtek/rtw89"
 series="$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} END {print v "." p}' "${TREE}/Makefile")"
 [[ "${series}" =~ ^[0-9]+\.[0-9]+$ ]] || die "could not read the kernel version from ${TREE}/Makefile"
 
-running="$(uname -r | cut -d. -f1,2)"
+running="$(uname -r | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')"
 if [[ "${series}" != "${running}" ]]; then
 	echo "[WARN] rtw89 sources are from Linux ${series}, running kernel is $(uname -r)."
 	echo "       DKMS will only build for ${series}.x kernels."
@@ -90,7 +90,7 @@ for i in "${!modules[@]}"; do
 	module_lines+="DEST_MODULE_LOCATION[${i}]=\"/updates/rtw89\""$'\n'
 done
 
-regex="^${series//./\\.}\\."
+regex="^${series//./\\.}([.-]|$)"
 
 conf="$(python3 - "${REPO_DIR}/dkms/dkms.conf.in" "${PKG}" "${VER}" "${regex}" "${module_lines}" <<'EOF'
 import sys

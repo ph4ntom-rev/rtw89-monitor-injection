@@ -9,7 +9,7 @@ set -eu
 
 kver="${1:?usage: dkms_pre_build.sh <kernelver>}"
 src_series="$(cat RTW89_SOURCE_KERNEL)"
-target_series="$(echo "$kver" | cut -d. -f1,2)"
+target_series="$(printf '%s\n' "$kver" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')"
 
 if [ "$src_series" != "$target_series" ]; then
 	echo "rtw89-monitor-injection: rtw89 sources are from Linux $src_series," >&2

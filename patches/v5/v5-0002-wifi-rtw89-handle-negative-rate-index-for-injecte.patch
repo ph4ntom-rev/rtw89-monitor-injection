@@ -1,6 +1,6 @@
-From 8aa30a8946272dbcdb753a020bb829251dc47b0c Mon Sep 17 00:00:00 2001
+From 1216a7195c940b4bad30c41da0c4fef3497e27b2 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
-Date: Sun, 8 Nov 2026 02:59:40 +0500
+Date: Tue, 10 Nov 2026 18:02:00 +0500
 Subject: [PATCH v5 02/10] wifi: rtw89: handle negative rate index for injected
  frames
 
@@ -16,6 +16,7 @@ back to data_retry_lowest_rate (or OFDM6 when
 IEEE80211_TX_CTL_NO_CCK_RATE is set) for data frames.
 
 Fixes: e96abe4fd7cd ("wifi: rtw89: consider data rate/bandwidth/GI for injected packets")
+Cc: stable@vger.kernel.org
 Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---
  drivers/net/wireless/realtek/rtw89/core.c | 15 ++++++++++++++-

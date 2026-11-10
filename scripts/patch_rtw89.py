@@ -518,20 +518,20 @@ def patch_core_c(
         elif "FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, 1)" in src:
             src = src.replace(
                 "FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, 1)",
-                "FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, !desc_info->is_bmc && !desc_info->dis_rts)",
+                "FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, (desc_info->is_bmc || desc_info->dis_rts) ? 0 : 1)",
             )
             notes.append("gated RTW89_TXWD_INFO4_RTS_EN on !is_bmc && !dis_rts")
 
         if "FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, 1)" in src:
             src = src.replace(
                 "FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, 1)",
-                "FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, !desc_info->dis_hw_rts)",
+                "FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, desc_info->dis_hw_rts ? 0 : 1)",
             )
             notes.append("gated RTW89_TXWD_INFO4_HW_RTS_EN on !desc_info->dis_hw_rts")
         if "FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, 1)" in src:
             src = src.replace(
                 "FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, 1)",
-                "FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, !desc_info->dis_hw_rts)",
+                "FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, desc_info->dis_hw_rts ? 0 : 1)",
             )
             notes.append("gated BE_TXD_INFO4_HW_RTS_EN on !desc_info->dis_hw_rts")
 

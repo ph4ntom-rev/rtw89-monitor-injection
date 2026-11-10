@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause
 """
-Automated unit tests for scripts/patch_rtw89.py, patches/v4/, and repository hygiene.
+Automated unit tests for scripts/patch_rtw89.py, patches/v5/, and repository hygiene.
 Run with:
   python3 -m unittest discover -s tests -v
 """
@@ -784,13 +784,49 @@ class PatchRtw89TestCase(unittest.TestCase):
                 patched_mac80211.index("if (!rtwdev->dbcc_en)"),
             )
             patched_core = (tree / "core.c").read_text(encoding="utf-8")
-            self.assertIn("FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, !desc_info->dis_hw_rts)", patched_core)
-            self.assertIn("FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, !desc_info->dis_hw_rts)", patched_core)
+            self.assertIn("FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, desc_info->dis_hw_rts ? 0 : 1)", patched_core)
+            self.assertIn("FIELD_PREP(BE_TXD_INFO4_HW_RTS_EN, desc_info->dis_hw_rts ? 0 : 1)", patched_core)
+            for line in patched_core.splitlines():
+                if "FIELD_PREP" in line:
+                    self.assertNotIn("!", line)
             self.assertIn("rtw89_mon_refine_rx_fltr(rtwdev->hal.rx_fltr)", (tree / "fw.c").read_text(encoding="utf-8"))
 
             patch_rtw89.revert_tree(tree)
             self.assertEqual((tree / "fw.c").read_text(encoding="utf-8"), v618_fw_c)
             self.assertEqual((tree / "mac80211.c").read_text(encoding="utf-8"), v618_mac80211_c)
+
+    def test_v66_txwd_info4_avoids_sparse_negation_in_field_prep(self):
+        v66_core_h = (
+            "struct rtw89_vif {\n\tu8 mac_id;\n};\n"
+            "struct rtw89_tx_desc_info {\n\tbool is_bmc;\n};\n"
+        )
+        v66_core_c = (
+            GEN1_CORE_C
+            + "\nstatic __le32 rtw89_build_txwd_info4(struct rtw89_tx_desc_info *desc_info)\n{\n"
+            "\tu32 dword = FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, 1) |\n"
+            "\t\t    FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, 1);\n\n"
+            "\treturn cpu_to_le32(dword);\n}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / "core.h").write_text(v66_core_h, encoding="utf-8", newline="\n")
+            (tree / "Makefile").write_text(GEN1_MAKEFILE, encoding="utf-8", newline="\n")
+            (tree / "core.c").write_text(v66_core_c, encoding="utf-8", newline="\n")
+            (tree / "mac80211.c").write_text(GEN1_MAC80211_C, encoding="utf-8", newline="\n")
+
+            patch_rtw89.apply_tree(tree)
+            patched_core = (tree / "core.c").read_text(encoding="utf-8")
+            self.assertIn(
+                "FIELD_PREP(RTW89_TXWD_INFO4_RTS_EN, (desc_info->is_bmc || desc_info->dis_rts) ? 0 : 1)",
+                patched_core,
+            )
+            self.assertIn(
+                "FIELD_PREP(RTW89_TXWD_INFO4_HW_RTS_EN, desc_info->dis_hw_rts ? 0 : 1)",
+                patched_core,
+            )
+            for line in patched_core.splitlines():
+                if "FIELD_PREP" in line:
+                    self.assertNotIn("!", line)
 
     def test_verify_hardware_resolve_firmware_path(self):
         with tempfile.TemporaryDirectory() as tmp:

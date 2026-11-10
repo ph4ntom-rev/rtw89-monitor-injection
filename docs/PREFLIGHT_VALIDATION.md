@@ -20,7 +20,7 @@ automatically by [CI](../.github/workflows/ci.yml):
 | `make W=1 C=1` (`sparse` + `CONFIG_PROVE_LOCKING=y`) | 0 new compiler or sparse warnings across the series |
 | `checkpatch.pl --strict` | 0 errors, 0 warnings, 0 checks across `v5-0001`..`v5-0010` |
 | `patch_rtw89.py --apply` across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` | hooks apply cleanly without warnings; `--revert` restores trees byte-for-byte |
-| Out-of-tree Kbuild (`make W=1 modules`) on LTS `v6.12` (Gen 1) and LTS `v6.18` (Gen 2) | compiles all AX/BE PCIe & USB modules cleanly with 0 warnings |
+| Out-of-tree Kbuild (`make W=1 C=1 modules`) on LTS `v6.6`, `v6.12` (Gen 1) and `v6.18` (Gen 2) | compiles all AX/BE PCIe & USB modules cleanly with 0 new compiler or sparse warnings |
 | DKMS flow (`dkms_prepare.sh`, `dkms_pre_build.sh`) | handles stable, `-rc`, and cross-series `.config` lookup (`BUILD_EXCLUSIVE_KERNEL`), rejects mismatched series |
 
 ## 3. Firmware verification (`RTL8852AE` `0.13.36.2`, commit `52acc807`)

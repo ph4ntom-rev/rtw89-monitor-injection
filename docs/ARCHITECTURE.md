@@ -142,5 +142,5 @@ the `rtw89` sources and links `src/rtw89_mon.c` into `rtw89_core.ko`:
   `PATCH v5`, failing fast (`RuntimeError`) if any mandatory hook fails to match.
 - `--revert` restores all modified files byte-for-byte from `.orig` backups.
 - Verified in CI: `--apply`/`--revert` across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`,
-  `v6.18` (Gen 2), and `v7.4-rc1`, plus Kbuild `make W=1 modules` compilation on LTS
-  `v6.12`, LTS `v6.18`, and `v7.4-rc1` (`W=1 C=1` sparse + `CONFIG_PROVE_LOCKING=y`).
+  `v6.18` (Gen 2), and `v7.4-rc1`, plus Kbuild `make W=1 C=1 modules` compilation on LTS
+  `v6.6`, LTS `v6.12`, LTS `v6.18`, and `v7.4-rc1` (`CONFIG_PROVE_LOCKING=y`).

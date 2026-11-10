@@ -173,6 +173,7 @@ jobs:
       fail-fast: false
       matrix:
         kernel:
+          - { tag: "v6.6", gen: "1" }
           - { tag: "v6.12", gen: "1" }
           - { tag: "v6.18", gen: "2" }
     steps:
@@ -231,7 +232,9 @@ jobs:
           fi
           test -f oot/rtw89_core.ko
           test -f oot/rtw89_8852ae.ko
-          test -f oot/rtw89_8922ae.ko
+          if [[ "${{ matrix.kernel.tag }}" != "v6.6" ]]; then
+            test -f oot/rtw89_8922ae.ko
+          fi
           python3 repo/scripts/patch_rtw89.py --rtw89-dir oot --revert
           diff -r oot pristine-rtw89 --exclude='*.o' --exclude='*.ko' \
             --exclude='*.mod*' --exclude='.*' --exclude='modules.order' --exclude='Module.symvers'

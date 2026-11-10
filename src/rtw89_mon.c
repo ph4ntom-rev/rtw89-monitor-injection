@@ -278,7 +278,7 @@ int rtw89_mon_add_vif_post(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif)
 
 void rtw89_mon_remove_vif_pre(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif)
 {
-	rtw89_mon_sync_standalone_vif(rtwdev, vif_to_rtwvif(vif));
+	rtw89_mon_sync_standalone_vif(rtwdev, vif_to_rtwvif_safe(vif));
 }
 
 u32 rtw89_mon_refine_rx_fltr(u32 rx_fltr)
@@ -462,7 +462,7 @@ void rtw89_mon_fixup_tx_desc(struct rtw89_dev *rtwdev,
 				  tx_req->rtwvif_link->mac_idx : RTW89_MAC_0;
 #else
 			mac_idx = tx_req->vif ?
-				  vif_to_rtwvif(tx_req->vif)->mac_idx : RTW89_MAC_0;
+				  vif_to_rtwvif_safe(tx_req->vif)->mac_idx : RTW89_MAC_0;
 #endif
 			tx_req->tx_type = RTW89_CORE_TX_TYPE_MGMT;
 			if (mac_idx == RTW89_MAC_1)

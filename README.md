@@ -16,7 +16,7 @@ operating channel across monitor interface restarts. Firmware is not modified.
 | :--- | :--- |
 | Current series | [`patches/v5/`](patches/v5/), 10 patches, base `torvalds/linux` [`d48723711bae`](https://github.com/torvalds/linux/commit/d48723711bae9b8cdc56719c448ba42fef28cbee) (7.4-rc1 merge window) |
 | Mailing list | v3 [posted](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/) on 2026-11-05, waiting for review. v4 was never sent. v5 is verified and ready to send after v3 review. |
-| Build & static checks | Each patch builds on its own; `W=1` and sparse (`C=1`) with `CONFIG_PROVE_LOCKING=y` show 0 new warnings; `checkpatch.pl --strict` reports 0 errors/warnings/checks; `patch_rtw89.py` verified across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` with Kbuild `make W=1 modules` on LTS `v6.12`, LTS `v6.18`, and `v7.4-rc1` in [CI](.github/workflows/ci.yml). |
+| Build & static checks | Each patch builds on its own; `W=1` and sparse (`C=1`) with `CONFIG_PROVE_LOCKING=y` show 0 new warnings; `checkpatch.pl --strict` reports 0 errors/warnings/checks; `patch_rtw89.py` verified across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` with Kbuild `make W=1 C=1 modules` on LTS `v6.6`, `v6.12`, `v6.18`, and `v7.4-rc1` in [CI](.github/workflows/ci.yml). |
 | Runtime & FW verification | **RTL8852AE** (`10ec:8852`, firmware `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — firmware-verified and runtime-validated on **v5**, see [validation](docs/PREFLIGHT_VALIDATION.md). |
 | Not runtime-tested | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB devices, DBCC. |
 

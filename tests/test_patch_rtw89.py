@@ -693,6 +693,9 @@ class PatchRtw89TestCase(unittest.TestCase):
 
     def test_cross_kernel_feature_flags_and_dbcc_rx_filter_placement(self):
         self.assertFalse(hasattr(patch_rtw89, "patch_txrx_h"))
+        mon_c = (REPO_ROOT / "src" / "rtw89_mon.c").read_text(encoding="utf-8")
+        self.assertNotRegex(mon_c, r"\bvif_to_rtwvif\b")
+        self.assertIn("vif_to_rtwvif_safe(", mon_c)
 
         # v6.18-like tree: Gen 2 (rtw89_vif_link), wiphy_lock, RTW89_CHIP_BE + V1 rates,
         # no rtw89_mac_set_rx_fltr(), configure_filter returns early when !rtwdev->dbcc_en.

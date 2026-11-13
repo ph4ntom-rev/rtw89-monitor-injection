@@ -6,35 +6,39 @@
  * PATCH v5 rtw89 monitor-mode fixes for distribution trees (best effort):
  *
  * 1. Monitor RX Filter (PATCH v5 3/10):
- *    Retains FIF_CONTROL and FIF_PSPOLL in *new_flags and clears
+ *    Retains FIF_CONTROL and FIF_PSPOLL in *new_flags, tracks FIF_OTHER_BSS
+ *    separately from B_AX_SNIFFER_MODE (so hardware Auto-ACK stays enabled on
+ *    concurrent STA/AP and MONITOR_FLAG_ACTIVE interfaces), and clears
  *    B_AX_A_A1_MATCH, B_AX_A_BC, B_AX_A_MC, B_AX_A_UC_CAM_MATCH,
  *    B_AX_A_BC_CAM_MATCH, B_AX_A_MC_LIST_CAM_MATCH, B_AX_A_BCN_CHK_EN, and
- *    B_AX_UID_FILTER_MASK whenever B_AX_SNIFFER_MODE is set across MAC_0/MAC_1
- *    and scan/ROC/SER restores without mutating baseline rtwdev->hal.rx_fltr.
+ *    B_AX_UID_FILTER_MASK whenever B_AX_SNIFFER_MODE or FIF_OTHER_BSS is
+ *    active across MAC_0/MAC_1 and scan/ROC/SER restores.
  *
  * 2. RCU-Protected Monitor VIF Resolution (PATCH v5 4/10 & 6/10):
- *    Publishes the active standalone monitor VIF via RCU across interface
- *    addition and removal (including when a second non-monitor VIF is removed)
- *    using dynamically allocated RCU-freed per-device nodes (avoiding slot
- *    reuse ABA races) and resolves NULL or monitor info->control.vif pointers
- *    safely under rcu_read_lock().
+ *    Publishes the standalone monitor VIF and per-device active monitor VIF
+ *    list via RCU across interface addition and removal with coalesced
+ *    synchronize_rcu(), resolving NULL-vif standalone monitor TX and
+ *    concurrent MONITOR_FLAG_ACTIVE vif TX safely under rcu_read_lock() while
+ *    gating monitor TX on an active PHY entity.
  *
  * 3. Firmware Role & Injection Descriptor Handling (PATCH v5 2/10, 5/10, 7/10-9/10):
  *    Ensures NL80211_IFTYPE_MONITOR uses RTW89_NET_TYPE_NO_LINK and
  *    RTW89_SELF_ROLE_AP, routes non-Data frames (including 10-16B Control
- *    frames) via RTW89_CORE_TX_TYPE_MGMT, handles negative and out-of-range
- *    rate indices across AX and Wi-Fi 7 BE chips, disables hardware sequence
- *    generation unless IEEE80211_TX_CTL_ASSIGN_SEQ is set on a non-control
- *    frame, gates RTS/HW_RTS on IEEE80211_TX_RC_USE_RTS_CTS, and bounds
- *    retries on IEEE80211_TX_CTL_NO_ACK.
+ *    frames) via RTW89_CORE_TX_TYPE_MGMT, advertises hw->max_rate_tries = 63,
+ *    handles negative and out-of-range rate indices across AX and Wi-Fi 7 BE
+ *    chips, disables hardware sequence generation unless
+ *    IEEE80211_TX_CTL_ASSIGN_SEQ is set on a non-control frame, gates
+ *    RTS/HW_RTS on IEEE80211_TX_RC_USE_RTS_CTS, and honors
+ *    IEEE80211_TX_CTL_NO_ACK and IEEE80211_RADIOTAP_DATA_RETRIES.
  *
- * 4. Monitor Restart Channel Restoration (PATCH v5 10/10):
- *    Restores hw->conf.chandef on IEEE80211_CONF_CHANGE_MONITOR when
- *    RTW89_PHY_0 is inactive after rtw89_ops_stop() and chanctx ops are not
- *    registered (!rtwdev->ops->assign_vif_chanctx).
+ * 4. Idle / Monitor Channel Restoration (PATCH v5 10/10):
+ *    Restores hw->conf.chandef when leaving idle or toggling monitor mode when
+ *    RTW89_PHY_0 is inactive after rtw89_ops_stop() / rtw89_enter_ips() and
+ *    chanctx ops are not registered (!rtwdev->ops->assign_vif_chanctx).
  */
 
 #include <linux/etherdevice.h>
+#include <linux/export.h>
 #include <linux/ieee80211.h>
 #include <linux/list.h>
 #include <linux/lockdep.h>
@@ -54,6 +58,9 @@
 #include "reg.h"
 #include "txrx.h"
 #include "rtw89_mon.h"
+#if RTW89_MON_HAS_PHYSTS_INIT
+#include "phy.h"
+#endif
 
 /*
  * Exact R_AX_RX_FLTR_OPT / R_BE_RX_FLTR_OPT bit positions from upstream
@@ -120,11 +127,20 @@
 	lockdep_is_held(&(rtwdev)->mutex)
 #endif
 
+struct rtw89_mon_vif_entry {
+	struct list_head list;
+	struct rcu_head rcu;
+	struct ieee80211_vif *vif;
+};
+
 struct rtw89_mon_ctx {
 	struct list_head list;
 	struct rcu_head rcu;
 	struct rtw89_dev *rtwdev;
 	struct ieee80211_vif __rcu *mon_vif;
+	struct list_head vifs;
+	unsigned int mon_vifs;
+	bool other_bss;
 };
 
 static DEFINE_SPINLOCK(rtw89_mon_lock);
@@ -143,21 +159,92 @@ rtw89_mon_find_ctx_locked(struct rtw89_dev *rtwdev)
 	return NULL;
 }
 
+static struct rtw89_mon_ctx *
+rtw89_mon_get_or_create_ctx(struct rtw89_dev *rtwdev, gfp_t gfp)
+{
+	struct rtw89_mon_ctx *ctx, *new_ctx;
+	unsigned long flags;
+
+	spin_lock_irqsave(&rtw89_mon_lock, flags);
+	ctx = rtw89_mon_find_ctx_locked(rtwdev);
+	spin_unlock_irqrestore(&rtw89_mon_lock, flags);
+	if (ctx)
+		return ctx;
+
+	new_ctx = kzalloc(sizeof(*new_ctx), gfp);
+	if (!new_ctx)
+		return NULL;
+
+	new_ctx->rtwdev = rtwdev;
+	INIT_LIST_HEAD(&new_ctx->vifs);
+
+	spin_lock_irqsave(&rtw89_mon_lock, flags);
+	ctx = rtw89_mon_find_ctx_locked(rtwdev);
+	if (!ctx) {
+		ctx = new_ctx;
+		new_ctx = NULL;
+		list_add_rcu(&ctx->list, &rtw89_mon_list);
+	}
+	spin_unlock_irqrestore(&rtw89_mon_lock, flags);
+
+	kfree(new_ctx);
+	return ctx;
+}
+
+static bool rtw89_mon_has_active_entity(struct rtw89_dev *rtwdev)
+{
+#if RTW89_MON_ENTITY_STATE_2ARGS
+	return rtw89_get_entity_state(rtwdev, RTW89_PHY_0) ||
+	       (rtwdev->dbcc_en && rtw89_get_entity_state(rtwdev, RTW89_PHY_1));
+#else
+	return rtw89_get_entity_state(rtwdev);
+#endif
+}
+
 void rtw89_mon_register_hw_caps(struct rtw89_dev *rtwdev)
 {
 	struct ieee80211_hw *hw = rtwdev->hw;
 
 	hw->wiphy->interface_modes |= BIT(NL80211_IFTYPE_MONITOR);
+	hw->wiphy->features |= NL80211_FEATURE_ACTIVE_MONITOR;
+	hw->max_rate_tries = RTW89_MON_MAX_RATE_TRIES;
 	ieee80211_hw_set(hw, WANT_MONITOR_VIF);
 	ieee80211_hw_set(hw, SIGNAL_DBM);
 }
 
-static void rtw89_mon_sync_standalone_vif(struct rtw89_dev *rtwdev,
-					  struct rtw89_vif *exclude_rtwvif)
+bool rtw89_mon_is_monitoring(struct rtw89_dev *rtwdev)
 {
+	struct rtw89_mon_ctx *ctx;
+	bool mon = !!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR);
+
+	if (mon)
+		return true;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(ctx, &rtw89_mon_list, list) {
+		if (ctx->rtwdev == rtwdev) {
+			mon = READ_ONCE(ctx->mon_vifs) > 0;
+			break;
+		}
+	}
+	rcu_read_unlock();
+
+	return mon;
+}
+EXPORT_SYMBOL(rtw89_mon_is_monitoring);
+
+static void rtw89_mon_sync_vifs(struct rtw89_dev *rtwdev,
+				struct ieee80211_vif *add_vif,
+				struct ieee80211_vif *rem_vif)
+{
+	struct rtw89_vif *exclude_rtwvif = rem_vif ? vif_to_rtwvif_safe(rem_vif) : NULL;
+	struct rtw89_mon_vif_entry *new_entry = NULL;
+	struct rtw89_mon_vif_entry *entry, *tmp;
+	unsigned int prev_mon_vifs = 0;
+	unsigned int mon_count = 0;
 	struct rtw89_vif *sole = NULL;
 	struct rtw89_vif *iter;
-	struct rtw89_mon_ctx *ctx;
+	struct rtw89_mon_ctx *ctx = NULL;
 	unsigned long flags;
 	bool need_sync = false;
 	int count = 0;
@@ -167,13 +254,28 @@ static void rtw89_mon_sync_standalone_vif(struct rtw89_dev *rtwdev,
 			continue;
 		sole = iter;
 		count++;
+		if (rtwvif_to_vif(iter)->type == NL80211_IFTYPE_MONITOR) {
+			mon_count++;
+#if RTW89_MON_API_GEN < 2
+			/*
+			 * On Gen 1 kernels (Linux 6.1 - 6.12), ensure every
+			 * monitor VIF (standalone or concurrent active) uses
+			 * RTW89_SELF_ROLE_AP and updates firmware JoinInfo.
+			 */
+			if (iter->self_role != RTW89_SELF_ROLE_AP) {
+				iter->net_type = RTW89_NET_TYPE_NO_LINK;
+				iter->self_role = RTW89_SELF_ROLE_AP;
+				rtw89_fw_h2c_join_info(rtwdev, iter, NULL, false);
+			}
+#endif
+		}
 	}
 
 	if (count != 1 || rtwvif_to_vif(sole)->type != NL80211_IFTYPE_MONITOR)
 		sole = NULL;
 
-	if (!sole) {
 #if RTW89_MON_HAS_PURE_VIF
+	if (!sole) {
 #if RTW89_MON_PURE_VIF_RCU
 		if (rcu_access_pointer(rtwdev->pure_monitor_mode_vif)) {
 			RCU_INIT_POINTER(rtwdev->pure_monitor_mode_vif, NULL);
@@ -185,45 +287,7 @@ static void rtw89_mon_sync_standalone_vif(struct rtw89_dev *rtwdev,
 			need_sync = true;
 		}
 #endif
-#endif
-		spin_lock_irqsave(&rtw89_mon_lock, flags);
-		ctx = rtw89_mon_find_ctx_locked(rtwdev);
-		if (ctx) {
-			if (rcu_access_pointer(ctx->mon_vif)) {
-				RCU_INIT_POINTER(ctx->mon_vif, NULL);
-				need_sync = true;
-			}
-			if (count == 0) {
-				list_del_rcu(&ctx->list);
-				kfree_rcu(ctx, rcu);
-				need_sync = true;
-			}
-		}
-		spin_unlock_irqrestore(&rtw89_mon_lock, flags);
-
-		if (need_sync)
-			synchronize_rcu();
-		return;
-	}
-
-	/*
-	 * On Gen 1 kernels (Linux 6.1 - 6.12) where rtw89_vif_type_mapping()
-	 * may not have set self_role = RTW89_SELF_ROLE_AP prior to
-	 * rtw89_mac_vif_init(), update the role and notify firmware via
-	 * rtw89_fw_h2c_join_info(). On Gen 2 kernels (Linux 6.13+) patched by
-	 * patch_rtw89.py, rtw89_vif_type_mapping() already configured
-	 * RTW89_SELF_ROLE_AP before rtw89_mac_vif_init().
-	 */
-#if RTW89_MON_API_GEN < 2
-	if (sole->self_role != RTW89_SELF_ROLE_AP) {
-		sole->net_type = RTW89_NET_TYPE_NO_LINK;
-		sole->self_role = RTW89_SELF_ROLE_AP;
-		rtw89_fw_h2c_join_info(rtwdev, sole, NULL, false);
-	}
-#endif
-
-#if RTW89_MON_HAS_PURE_VIF
-	{
+	} else {
 		struct rtw89_vif *old_pure;
 
 #if RTW89_MON_PURE_VIF_RCU
@@ -239,51 +303,141 @@ static void rtw89_mon_sync_standalone_vif(struct rtw89_dev *rtwdev,
 	}
 #endif
 
+	if (sole || mon_count > 0 ||
+	    (add_vif && add_vif->type == NL80211_IFTYPE_MONITOR)) {
+		ctx = rtw89_mon_get_or_create_ctx(rtwdev, GFP_KERNEL);
+		if (!ctx)
+			rtw89_warn(rtwdev, "failed to allocate monitor context\n");
+	}
+
+	if (add_vif && add_vif->type == NL80211_IFTYPE_MONITOR) {
+		new_entry = kzalloc(sizeof(*new_entry), GFP_KERNEL);
+		if (new_entry)
+			new_entry->vif = add_vif;
+	}
+
 	spin_lock_irqsave(&rtw89_mon_lock, flags);
-	ctx = rtw89_mon_find_ctx_locked(rtwdev);
+	if (!ctx)
+		ctx = rtw89_mon_find_ctx_locked(rtwdev);
 	if (ctx) {
 		struct ieee80211_vif *old_vif =
 			rcu_dereference_protected(ctx->mon_vif,
 						  lockdep_is_held(&rtw89_mon_lock));
 
-		if (old_vif && old_vif != rtwvif_to_vif(sole))
+		prev_mon_vifs = ctx->mon_vifs;
+		if (!sole) {
+			if (old_vif) {
+				RCU_INIT_POINTER(ctx->mon_vif, NULL);
+				need_sync = true;
+			}
+		} else {
+			if (old_vif && old_vif != rtwvif_to_vif(sole))
+				need_sync = true;
+			rcu_assign_pointer(ctx->mon_vif, rtwvif_to_vif(sole));
+		}
+
+		if (new_entry) {
+			bool exists = false;
+
+			list_for_each_entry(entry, &ctx->vifs, list) {
+				if (entry->vif == add_vif) {
+					exists = true;
+					break;
+				}
+			}
+			if (!exists) {
+				list_add_rcu(&new_entry->list, &ctx->vifs);
+				new_entry = NULL;
+			}
+		}
+
+		if (rem_vif) {
+			list_for_each_entry_safe(entry, tmp, &ctx->vifs, list) {
+				if (entry->vif == rem_vif) {
+					list_del_rcu(&entry->list);
+					kfree_rcu(entry, rcu);
+					need_sync = true;
+				}
+			}
+		}
+
+		WRITE_ONCE(ctx->mon_vifs, mon_count);
+
+		if (count == 0) {
+			list_for_each_entry_safe(entry, tmp, &ctx->vifs, list) {
+				list_del_rcu(&entry->list);
+				kfree_rcu(entry, rcu);
+			}
+			list_del_rcu(&ctx->list);
+			kfree_rcu(ctx, rcu);
 			need_sync = true;
-		rcu_assign_pointer(ctx->mon_vif, rtwvif_to_vif(sole));
+		}
 	}
 	spin_unlock_irqrestore(&rtw89_mon_lock, flags);
 
-	if (!ctx) {
-		ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
-		if (!ctx) {
-			rtw89_warn(rtwdev, "failed to allocate monitor context\n");
-		} else {
-			ctx->rtwdev = rtwdev;
-			RCU_INIT_POINTER(ctx->mon_vif, rtwvif_to_vif(sole));
-			spin_lock_irqsave(&rtw89_mon_lock, flags);
-			list_add_rcu(&ctx->list, &rtw89_mon_list);
-			spin_unlock_irqrestore(&rtw89_mon_lock, flags);
-		}
-	}
+	kfree(new_entry);
 
 	if (need_sync)
 		synchronize_rcu();
+
+#if RTW89_MON_HAS_PHYSTS_INIT
+	if ((!prev_mon_vifs != !mon_count) &&
+	    test_bit(RTW89_FLAG_POWERON, rtwdev->flags))
+		rtw89_physts_parsing_init(rtwdev);
+#else
+	(void)prev_mon_vifs;
+#endif
 }
 
 int rtw89_mon_add_vif_post(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif)
 {
-	(void)vif;
-	rtw89_mon_sync_standalone_vif(rtwdev, NULL);
+	rtw89_mon_sync_vifs(rtwdev, vif, NULL);
 	return 0;
 }
 
 void rtw89_mon_remove_vif_pre(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif)
 {
-	rtw89_mon_sync_standalone_vif(rtwdev, vif_to_rtwvif_safe(vif));
+	rtw89_mon_sync_vifs(rtwdev, NULL, vif);
 }
 
-u32 rtw89_mon_refine_rx_fltr(u32 rx_fltr)
+static bool rtw89_mon_set_other_bss(struct rtw89_dev *rtwdev, bool other_bss)
 {
-	if (rx_fltr & B_AX_SNIFFER_MODE)
+	struct rtw89_mon_ctx *ctx = NULL;
+	unsigned long flags;
+	bool prev = false;
+
+	if (other_bss)
+		ctx = rtw89_mon_get_or_create_ctx(rtwdev, GFP_ATOMIC);
+
+	spin_lock_irqsave(&rtw89_mon_lock, flags);
+	if (!ctx)
+		ctx = rtw89_mon_find_ctx_locked(rtwdev);
+	if (ctx) {
+		prev = ctx->other_bss;
+		WRITE_ONCE(ctx->other_bss, other_bss);
+	}
+	spin_unlock_irqrestore(&rtw89_mon_lock, flags);
+
+	return prev;
+}
+
+u32 rtw89_mon_refine_rx_fltr(struct rtw89_dev *rtwdev, u32 rx_fltr)
+{
+	struct rtw89_mon_ctx *ctx;
+	bool other_bss = false;
+
+	if (!(rx_fltr & B_AX_SNIFFER_MODE)) {
+		rcu_read_lock();
+		list_for_each_entry_rcu(ctx, &rtw89_mon_list, list) {
+			if (ctx->rtwdev == rtwdev) {
+				other_bss = READ_ONCE(ctx->other_bss);
+				break;
+			}
+		}
+		rcu_read_unlock();
+	}
+
+	if ((rx_fltr & B_AX_SNIFFER_MODE) || other_bss)
 		rx_fltr &= ~RTW89_MON_SNIFFER_CLRMASK;
 
 	return rx_fltr;
@@ -292,16 +446,19 @@ u32 rtw89_mon_refine_rx_fltr(u32 rx_fltr)
 void rtw89_mon_prepare_rx_filter(struct rtw89_dev *rtwdev, u32 *rx_fltr,
 				 unsigned int *total_flags)
 {
-	(void)total_flags;
+	bool other_bss = total_flags && (*total_flags & FIF_OTHER_BSS);
 
-	if (!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR)) {
+	rtw89_mon_set_other_bss(rtwdev, other_bss);
+
+	if (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR) {
+		rtwdev->hal.rx_fltr |= B_AX_SNIFFER_MODE;
+		*rx_fltr |= B_AX_SNIFFER_MODE;
+	} else {
 		rtwdev->hal.rx_fltr &= ~B_AX_SNIFFER_MODE;
-		return;
+		*rx_fltr &= ~B_AX_SNIFFER_MODE;
 	}
 
-	rtwdev->hal.rx_fltr |= B_AX_SNIFFER_MODE;
-	*rx_fltr |= B_AX_SNIFFER_MODE;
-	*rx_fltr = rtw89_mon_refine_rx_fltr(*rx_fltr);
+	*rx_fltr = rtw89_mon_refine_rx_fltr(rtwdev, *rx_fltr);
 }
 
 static void rtw89_mon_write_rx_fltr_reg(struct rtw89_dev *rtwdev, u8 mac_idx,
@@ -325,16 +482,23 @@ static void rtw89_mon_write_rx_fltr_reg(struct rtw89_dev *rtwdev, u8 mac_idx,
 void rtw89_mon_apply_rx_filter(struct rtw89_dev *rtwdev,
 			       unsigned int *total_flags)
 {
+	bool other_bss = total_flags && (*total_flags & FIF_OTHER_BSS);
+	bool sniffer = !!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR);
+	bool prev_other_bss;
 	u32 rx_fltr;
 
-	if (!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR)) {
+	prev_other_bss = rtw89_mon_set_other_bss(rtwdev, other_bss);
+	if (!sniffer && !other_bss && !prev_other_bss) {
 		rtwdev->hal.rx_fltr &= ~B_AX_SNIFFER_MODE;
 		return;
 	}
 
-	rtwdev->hal.rx_fltr |= B_AX_SNIFFER_MODE;
-	rx_fltr = rtwdev->hal.rx_fltr;
-	rtw89_mon_prepare_rx_filter(rtwdev, &rx_fltr, total_flags);
+	if (sniffer)
+		rtwdev->hal.rx_fltr |= B_AX_SNIFFER_MODE;
+	else
+		rtwdev->hal.rx_fltr &= ~B_AX_SNIFFER_MODE;
+
+	rx_fltr = rtw89_mon_refine_rx_fltr(rtwdev, rtwdev->hal.rx_fltr);
 
 	if (rtwdev->scanning) {
 		rx_fltr &= ~B_AX_A_BCN_CHK_EN;
@@ -351,10 +515,11 @@ void rtw89_mon_config_channel(struct rtw89_dev *rtwdev, u32 changed)
 {
 	struct ieee80211_hw *hw = rtwdev->hw;
 
-	if (!(changed & IEEE80211_CONF_CHANGE_MONITOR))
+	if (!(changed & (IEEE80211_CONF_CHANGE_IDLE |
+			 IEEE80211_CONF_CHANGE_MONITOR)))
 		return;
 
-	if (!(hw->conf.flags & IEEE80211_CONF_MONITOR))
+	if (hw->conf.flags & IEEE80211_CONF_IDLE)
 		return;
 
 #if RTW89_MON_HAS_RTWDEV_OPS
@@ -391,13 +556,17 @@ void rtw89_mon_config_channel(struct rtw89_dev *rtwdev, u32 changed)
 struct ieee80211_vif *rtw89_mon_resolve_tx_vif(struct rtw89_dev *rtwdev,
 					       struct ieee80211_vif *vif)
 {
+	struct rtw89_mon_vif_entry *entry;
 	struct rtw89_mon_ctx *ctx;
 
 	if (vif && vif->type != NL80211_IFTYPE_MONITOR)
 		return vif;
 
+	if (!rtw89_mon_has_active_entity(rtwdev))
+		return NULL;
+
+	if (!vif) {
 #if RTW89_MON_HAS_PURE_VIF
-	{
 		struct rtw89_vif *rtwvif;
 
 #if RTW89_MON_PURE_VIF_RCU
@@ -407,12 +576,23 @@ struct ieee80211_vif *rtw89_mon_resolve_tx_vif(struct rtw89_dev *rtwdev,
 #endif
 		if (rtwvif)
 			return rtwvif_to_vif(rtwvif);
-	}
 #endif
+		list_for_each_entry_rcu(ctx, &rtw89_mon_list, list) {
+			if (ctx->rtwdev == rtwdev)
+				return rcu_dereference(ctx->mon_vif);
+		}
+
+		return NULL;
+	}
 
 	list_for_each_entry_rcu(ctx, &rtw89_mon_list, list) {
-		if (ctx->rtwdev == rtwdev)
-			return rcu_dereference(ctx->mon_vif);
+		if (ctx->rtwdev != rtwdev)
+			continue;
+		list_for_each_entry_rcu(entry, &ctx->vifs, list) {
+			if (entry->vif == vif)
+				return vif;
+		}
+		break;
 	}
 
 	return NULL;
@@ -508,6 +688,10 @@ void rtw89_mon_fixup_tx_desc(struct rtw89_dev *rtwdev,
 #endif
 		desc_info->tx_cnt_lmt_en = true;
 		desc_info->tx_cnt_lmt = 1;
+	} else if (info->control.rates[0].count) {
+		desc_info->tx_cnt_lmt_en = true;
+		desc_info->tx_cnt_lmt = min_t(u8, info->control.rates[0].count,
+					      RTW89_MON_MAX_RATE_TRIES);
 	}
 
 	/*

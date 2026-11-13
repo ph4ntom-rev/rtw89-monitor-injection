@@ -3,8 +3,9 @@
  * Copyright (c) 2026 Enver Ikromov <owner@ph4ntom-rev.uz>
  *
  * Cross-kernel (Linux 6.1 - 7.x+) out-of-tree integration helpers for
- * rtw89 NL80211_IFTYPE_MONITOR RX filter, standalone raw frame injection,
- * and non-chanctx monitor restart channel restoration (PATCH v5, best effort).
+ * rtw89 NL80211_IFTYPE_MONITOR RX filter, standalone & active monitor raw
+ * frame injection, and non-chanctx idle/monitor channel restoration
+ * (PATCH v5, best effort).
  */
 
 #ifndef __RTW89_MON_H__
@@ -81,12 +82,22 @@
 #define RTW89_MON_HAS_UPD_WLAN_HDR 1
 #endif
 
+#ifndef RTW89_MON_HAS_PHYSTS_INIT
+#define RTW89_MON_HAS_PHYSTS_INIT 0
+#endif
+
+#define RTW89_MON_MAX_RATE_TRIES 0x3f
+
 void rtw89_mon_register_hw_caps(struct rtw89_dev *rtwdev);
 
 int rtw89_mon_add_vif_post(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif);
 void rtw89_mon_remove_vif_pre(struct rtw89_dev *rtwdev, struct ieee80211_vif *vif);
+#ifndef __RTW89_MON_IS_MONITORING_DECL
+#define __RTW89_MON_IS_MONITORING_DECL
+bool rtw89_mon_is_monitoring(struct rtw89_dev *rtwdev);
+#endif
 
-u32 rtw89_mon_refine_rx_fltr(u32 rx_fltr);
+u32 rtw89_mon_refine_rx_fltr(struct rtw89_dev *rtwdev, u32 rx_fltr);
 void rtw89_mon_prepare_rx_filter(struct rtw89_dev *rtwdev, u32 *rx_fltr,
 				 unsigned int *total_flags);
 void rtw89_mon_apply_rx_filter(struct rtw89_dev *rtwdev, unsigned int *total_flags);

@@ -562,8 +562,8 @@ class PatchRtw89TestCase(unittest.TestCase):
             self.assertIn("bool rts_en = !desc_info->is_bmc && !desc_info->dis_rts;", patched_core)
             self.assertIn("FIELD_PREP(BE_TXD_BODY6_NO_ACK, desc_info->no_ack)", patched_core)
             self.assertIn("rtw89_core_txq_check_agg", patched_core)
-            self.assertIn("rtw89_mon_refine_rx_fltr(rx_fltr)", (tree / "mac.c").read_text(encoding="utf-8"))
-            self.assertIn("rtw89_mon_refine_rx_fltr(rtwdev->hal.rx_fltr)", (tree / "mac_be.c").read_text(encoding="utf-8"))
+            self.assertIn("rtw89_mon_refine_rx_fltr(rtwdev, rx_fltr)", (tree / "mac.c").read_text(encoding="utf-8"))
+            self.assertIn("rtw89_mon_refine_rx_fltr(rtwdev, rtwdev->hal.rx_fltr)", (tree / "mac_be.c").read_text(encoding="utf-8"))
 
             patch_rtw89.revert_tree(tree)
             self.assertEqual((tree / "core.h").read_text(encoding="utf-8"), ext_core_h)
@@ -640,8 +640,9 @@ class PatchRtw89TestCase(unittest.TestCase):
         self.assertIn("Fixes: e96abe4fd7cd", body(2))
         self.assertIn("+\ts8 idx = info->control.rates[0].idx;", body(2))
 
-        # 3/10 refines rx_fltr across mac.h, mac.c, mac_be.c and retains control/pspoll flags
+        # 3/10 refines rx_fltr across mac.h, mac.c, mac_be.c, tracks FIF_OTHER_BSS, and retains control/pspoll flags
         self.assertIn("rtw89_mac_refine_rx_fltr", body(3))
+        self.assertIn("rx_fltr_other_bss", body(3))
         self.assertIn("FIF_CONTROL | FIF_PSPOLL", body(3))
 
         # 4/10 protects pure_monitor_mode_vif with RCU and recalculates sole monitor vif
@@ -655,8 +656,11 @@ class PatchRtw89TestCase(unittest.TestCase):
         self.assertIn("HAL8852A_Role_Disconnect", p5)
         self.assertIn("CCTL_ResetByMacid", p5)
 
-        # 6/10 and 7/10 centralize skb_headlen(skb) in rtw89_core_tx_write_link() and reroute injected control frames
+        # 6/10 and 7/10 support concurrent active monitors, centralize skb_headlen(skb), and reroute injected control frames
         p6 = body(6)
+        self.assertIn("NL80211_FEATURE_ACTIVE_MONITOR", p6)
+        self.assertIn("mon_tx_ready", p6)
+        self.assertIn("rtw89_is_monitoring", p6)
         self.assertIn("skb_headlen(skb)", p6)
         self.assertIn("return -EINVAL;", p6)
         p7 = body(7)
@@ -667,17 +671,20 @@ class PatchRtw89TestCase(unittest.TestCase):
         # 8/10 guards TXQ aggregation, stats, WoW AKM, and BTC hooks on injected frames
         self.assertIn("rtw89_core_txq_check_agg", body(8))
 
-        # 9/10 guards control frames against hw_seq_mode, gates RTS & HW_RTS, clamps idx/mcs, and sets BE_TXD_BODY6_NO_ACK
+        # 9/10 guards control frames against hw_seq_mode, gates RTS & HW_RTS, honors max_rate_tries/retries/NO_ACK, and clamps idx/mcs
         p9 = body(9)
         self.assertIn("ieee80211_is_ctl(hdr->frame_control)", p9)
         self.assertIn("IEEE80211_TX_RC_USE_RTS_CTS", p9)
         self.assertIn("desc_info->hw_rts_en", p9)
+        self.assertIn("max_rate_tries", p9)
+        self.assertIn("rates[0].count", p9)
         self.assertIn("umin(", p9)
         self.assertIn("BE_TXD_BODY6_NO_ACK", p9)
         self.assertIn("TXWD v0", p9)
 
-        # 10/10 gates channel restoration on !rtwdev->ops->assign_vif_chanctx
+        # 10/10 gates channel restoration on !rtwdev->ops->assign_vif_chanctx and IDLE transitions
         p10_diff = body(10).split("\ndiff --git ", 1)[1]
+        self.assertIn("IEEE80211_CONF_CHANGE_IDLE", p10_diff)
         self.assertIn("!rtwdev->ops->assign_vif_chanctx", p10_diff)
         self.assertNotIn("support_chanctx_num", p10_diff)
 
@@ -696,6 +703,8 @@ class PatchRtw89TestCase(unittest.TestCase):
         mon_c = (REPO_ROOT / "src" / "rtw89_mon.c").read_text(encoding="utf-8")
         self.assertNotRegex(mon_c, r"\bvif_to_rtwvif\b")
         self.assertIn("vif_to_rtwvif_safe(", mon_c)
+        self.assertIn("EXPORT_SYMBOL(rtw89_mon_is_monitoring);", mon_c)
+        self.assertIn("NL80211_FEATURE_ACTIVE_MONITOR", mon_c)
 
         # v6.18-like tree: Gen 2 (rtw89_vif_link), wiphy_lock, RTW89_CHIP_BE + V1 rates,
         # no rtw89_mac_set_rx_fltr(), configure_filter returns early when !rtwdev->dbcc_en.
@@ -789,11 +798,92 @@ class PatchRtw89TestCase(unittest.TestCase):
             for line in patched_core.splitlines():
                 if "FIELD_PREP" in line:
                     self.assertNotIn("!", line)
-            self.assertIn("rtw89_mon_refine_rx_fltr(rtwdev->hal.rx_fltr)", (tree / "fw.c").read_text(encoding="utf-8"))
+            self.assertIn("rtw89_mon_refine_rx_fltr(rtwdev, rtwdev->hal.rx_fltr)", (tree / "fw.c").read_text(encoding="utf-8"))
 
             patch_rtw89.revert_tree(tree)
             self.assertEqual((tree / "fw.c").read_text(encoding="utf-8"), v618_fw_c)
             self.assertEqual((tree / "mac80211.c").read_text(encoding="utf-8"), v618_mac80211_c)
+
+    def test_pci_mac_h_phy_and_rx_radiotap_hooks_and_revert(self):
+        core_h = (
+            GEN2_CORE_H.replace("#endif\n", "")
+            + "static inline struct sk_buff *rtw89_alloc_skb_for_rx(struct rtw89_dev *rtwdev,\n"
+            + "\t\t\t\t\t\t     unsigned int length)\n"
+            + "{\n"
+            + "\tif (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR)\n"
+            + "\t\treturn dev_alloc_skb(length + 64);\n"
+            + "\treturn dev_alloc_skb(length);\n"
+            + "}\n#endif\n"
+        )
+        core_c = (
+            GEN2_CORE_C
+            + "\nstatic void rtw89_core_update_radiotap(struct rtw89_dev *rtwdev)\n{\n"
+            + "\tif (!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR))\n\t\treturn;\n}\n\n"
+            + "static void rtw89_core_rx_to_mac80211(struct rtw89_dev *rtwdev)\n{\n"
+            + "\trtw89_core_update_radiotap(rtwdev, desc_info, skb, rx_status, phy_ppdu);\n"
+            + "\trtw89_core_update_rx_freq_from_ie(rtwdev, skb, rx_status);\n}\n"
+        )
+        pci_c = (
+            '// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause\n'
+            '#include "core.h"\n\n'
+            "static void rtw89_pci_tx_status(struct rtw89_dev *rtwdev, struct sk_buff *skb, u8 tx_status)\n"
+            "{\n"
+            "\tif (tx_status == RTW89_TX_DONE) {\n"
+            "\t\tinfo->flags |= IEEE80211_TX_STAT_ACK;\n"
+            "\t\ttx_ring->tx_acked++;\n"
+            "\t} else {\n"
+            "\t\ttx_ring->tx_retry_lmt++;\n"
+            "\t}\n"
+            "}\n"
+        )
+        mac_h = (
+            "static inline void rtw89_tx_rpt_tx_status(struct rtw89_dev *rtwdev, struct sk_buff *skb, u8 tx_status)\n"
+            "{\n"
+            "\tieee80211_tx_info_clear_status(info);\n"
+            "\tif (tx_status == RTW89_TX_DONE)\n"
+            "\t\tinfo->flags |= IEEE80211_TX_STAT_ACK;\n"
+            "}\n"
+        )
+        phy_h = "void rtw89_physts_parsing_init(struct rtw89_dev *rtwdev);\n"
+        phy_c = (
+            '// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause\n'
+            '#include "core.h"\n\n'
+            "static void __rtw89_physts_parsing_init(struct rtw89_dev *rtwdev)\n"
+            "{\n"
+            "\tif (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR)\n"
+            "\t\treturn;\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / "core.h").write_text(core_h, encoding="utf-8", newline="\n")
+            (tree / "Makefile").write_text(GEN1_MAKEFILE, encoding="utf-8", newline="\n")
+            (tree / "core.c").write_text(core_c, encoding="utf-8", newline="\n")
+            (tree / "mac80211.c").write_text(GEN2_MAC80211_C, encoding="utf-8", newline="\n")
+            (tree / "pci.c").write_text(pci_c, encoding="utf-8", newline="\n")
+            (tree / "mac.h").write_text(mac_h, encoding="utf-8", newline="\n")
+            (tree / "phy.h").write_text(phy_h, encoding="utf-8", newline="\n")
+            (tree / "phy.c").write_text(phy_c, encoding="utf-8", newline="\n")
+
+            patch_rtw89.apply_tree(tree)
+            autoconf = (tree / "rtw89_mon_autoconf.h").read_text(encoding="utf-8")
+            self.assertIn("#define RTW89_MON_HAS_PHYSTS_INIT 1", autoconf)
+            self.assertIn("rtw89_mon_is_monitoring(rtwdev)", (tree / "core.h").read_text(encoding="utf-8"))
+            self.assertIn("rtw89_mon_is_monitoring(rtwdev)", (tree / "phy.c").read_text(encoding="utf-8"))
+            self.assertIn("IEEE80211_TX_STAT_NOACK_TRANSMITTED", (tree / "mac.h").read_text(encoding="utf-8"))
+            self.assertIn("tx_status != RTW89_TX_RETRY_LIMIT", (tree / "pci.c").read_text(encoding="utf-8"))
+            patched_core_c = (tree / "core.c").read_text(encoding="utf-8")
+            self.assertLess(
+                patched_core_c.index("rtw89_core_update_rx_freq_from_ie(rtwdev, skb, rx_status);"),
+                patched_core_c.index("rtw89_core_update_radiotap(rtwdev, desc_info, skb, rx_status, phy_ppdu);"),
+            )
+
+            patch_rtw89.revert_tree(tree)
+            self.assertEqual((tree / "core.h").read_text(encoding="utf-8"), core_h)
+            self.assertEqual((tree / "core.c").read_text(encoding="utf-8"), core_c)
+            self.assertEqual((tree / "pci.c").read_text(encoding="utf-8"), pci_c)
+            self.assertEqual((tree / "mac.h").read_text(encoding="utf-8"), mac_h)
+            self.assertEqual((tree / "phy.c").read_text(encoding="utf-8"), phy_c)
 
     def test_v66_txwd_info4_avoids_sparse_negation_in_field_prep(self):
         v66_core_h = (
@@ -851,6 +941,47 @@ class PatchRtw89TestCase(unittest.TestCase):
                 fw_roots=[fw_root],
             )
             self.assertEqual(found_rotated, zst_fw)
+
+    def test_verify_hardware_redaction_and_tx_info_helpers(self):
+        raw_report = {
+            "promiscuous_rx": {
+                "distinct_bssid": ["aa:bb:cc:11:22:33", "dd:ee:ff:44:55:66"],
+            },
+            "packet_injection": {
+                "access_points": [
+                    {"bssid": "aa:bb:cc:11:22:33", "ssid": "NeighborHomeWiFi"},
+                ],
+            },
+        }
+        redacted = verify_hardware.redact_report(raw_report)
+        self.assertEqual(
+            redacted["promiscuous_rx"]["distinct_bssid"],
+            ["02:00:00:xx:xx:01", "02:00:00:xx:xx:02"],
+        )
+        self.assertEqual(
+            redacted["packet_injection"]["access_points"][0]["bssid"],
+            "02:00:00:xx:xx:01",
+        )
+        self.assertEqual(
+            redacted["packet_injection"]["access_points"][0]["ssid"],
+            "<redacted-ssid-1>",
+        )
+
+        tx_sample = (
+            "index=0, ch=0: bdram=0, max=256, rp=10, wp=10, tx_cnt=30, tx_acked=0, "
+            "tx_retry_lmt=10, tx_life_time=0, tx_mac_id_drop=0\n"
+            "index=12, ch=12: bdram=0, max=64, rp=5, wp=5, tx_cnt=99, tx_acked=99, "
+            "tx_retry_lmt=0, tx_life_time=0, tx_mac_id_drop=0\n"
+        )
+        totals = verify_hardware.parse_tx_info_totals(tx_sample)
+        self.assertEqual(totals["tx_cnt"], 30)
+        self.assertEqual(totals["tx_retry_lmt"], 10)
+
+        f_noack = verify_hardware.build_synthetic_data_frame(no_ack=True, retries=0)
+        f_rty = verify_hardware.build_synthetic_data_frame(no_ack=False, retries=2)
+        self.assertEqual(len(f_noack), 53)
+        self.assertEqual(len(f_rty), 53)
+        self.assertNotEqual(f_noack, f_rty)
 
     def test_repository_contains_no_forbidden_artifacts(self):
         forbidden_suffixes = {".bin", ".fw", ".rom", ".img", ".i64", ".idb", ".ko", ".pcap", ".pcapng"}

@@ -1,0 +1,107 @@
+{
+  "project": "rtw89-monitor-injection",
+  "series": "v5",
+  "timestamp_utc": "2026-11-12T20:40:43.061610+00:00",
+  "configuration": {
+    "parent_interface": "wlan0",
+    "monitor_interface": "mon0",
+    "channel": 40,
+    "capture_duration_seconds": 10.0,
+    "teardown_cycles": 25,
+    "post_stress_settle_seconds": 6.0,
+    "redacted": true
+  },
+  "status": "PASS",
+  "environment": {
+    "uname": "Linux ph4ntom-rev 7.1.5+kali-amd64 #1 SMP PREEMPT_DYNAMIC Kali 7.1.5-1kali1 (2026-07-29) x86_64 GNU/Linux",
+    "pci": "03:00.0 Network controller [0280]: Realtek Semiconductor Co., Ltd. RTL8852AE 802.11ax PCIe Wireless Network Adapter [10ec:8852]",
+    "kernel_taint": "12288",
+    "firmware_file": "/lib/firmware/rtw89/rtw8852a_fw-1.bin",
+    "firmware_sha256": "fdb5513cf7372440d7980a61aa4b753b192b056734a978458ae4a4ef7f4b2c1e",
+    "rtw89_core_sha256": "8e85c160b25467e0e0593a5bd69f82d30728aae9d48c43193dd3cd84d4e7d0bd"
+  },
+  "channel_restore": {
+    "expected_channel": 40,
+    "iw_channel_present": true,
+    "observed_beacon_ds_channels": [
+      40
+    ],
+    "passed": true
+  },
+  "promiscuous_rx": {
+    "sha256": "ca9abb8e73985b2a48fc30490cead217aab993ce83b02b3f22854fc8f3f93731",
+    "packets": 1752,
+    "radiotap": true,
+    "distinct_bssid": [
+      "02:00:00:xx:xx:01",
+      "02:00:00:xx:xx:02",
+      "02:00:00:xx:xx:03",
+      "02:00:00:xx:xx:04"
+    ],
+    "frames": {
+      "beacon": 264,
+      "probe_requests": 3,
+      "probe_responses": 6,
+      "block_ack": 147,
+      "rts": 533,
+      "cts": 523,
+      "ack": 211,
+      "data": 0,
+      "qos_data": 2,
+      "null_data": 19
+    },
+    "passed": true
+  },
+  "concurrent_active_monitor_and_retries": {
+    "active_monitor_interface": "mon0act",
+    "passive_drop_while_sta_up": true,
+    "active_monitor_tx_while_sta_up": true,
+    "noack_suppresses_retry_lmt": null,
+    "data_retries_honored": null,
+    "passed": true
+  },
+  "packet_injection": {
+    "skipped": true,
+    "passed": true,
+    "note": "Skipped active AP probing (--skip-aireplay); TX path validated via synthetic local frames"
+  },
+  "concurrency_and_stress": {
+    "raw_tx_sent": 12352,
+    "raw_tx_errors": 2263,
+    "raw_tx_binds": 2202,
+    "teardown_cycles_completed": 25,
+    "post_stress_rx": {
+      "sha256": "ce59e635e0575ccd097d59d796dbf75da6ede918a4d17c1b3df4d736e0f22d0b",
+      "packets": 733,
+      "radiotap": true,
+      "distinct_bssid": [
+        "02:00:00:xx:xx:01",
+        "02:00:00:xx:xx:02",
+        "02:00:00:xx:xx:03"
+      ],
+      "frames": {
+        "beacon": 262,
+        "probe_requests": 0,
+        "probe_responses": 0,
+        "block_ack": 56,
+        "rts": 161,
+        "cts": 154,
+        "ack": 63,
+        "data": 27,
+        "qos_data": 0,
+        "null_data": 2
+      },
+      "passed": true
+    },
+    "post_stress_injection": {
+      "skipped": true,
+      "passed": true
+    },
+    "passed": true
+  },
+  "kernel_health": {
+    "new_alerts": [],
+    "kernel_taint": "12288",
+    "passed": true
+  }
+}

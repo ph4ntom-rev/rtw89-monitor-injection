@@ -39,6 +39,10 @@ AIREPLAY_AP_RE = re.compile(
     r"[\s\S]*?Ping \(min/avg/max\): ([\d.]+)ms/([\d.]+)ms/([\d.]+)ms"
     r"[\s\S]*?(\d+)/(\d+): (\d+)%"
 )
+TX_RING_RE = re.compile(
+    r"index=\d+,\s*ch=(\d+):.*?tx_cnt=(\d+),\s*tx_acked=(\d+),\s*tx_retry_lmt=(\d+),"
+    r"\s*tx_life_time=(\d+),\s*tx_mac_id_drop=(\d+)"
+)
 
 
 def run_cmd(args, timeout=30, check=True):
@@ -61,6 +65,183 @@ def sha256_file(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def redact_report(report):
+    bssid_map = {}
+    ssid_map = {}
+
+    def mask_bssid(val):
+        key = val.lower()
+        if key not in bssid_map:
+            bssid_map[key] = f"02:00:00:xx:xx:{len(bssid_map) + 1:02x}"
+        return bssid_map[key]
+
+    def mask_ssid(val):
+        if not val:
+            return ""
+        if val not in ssid_map:
+            ssid_map[val] = f"<redacted-ssid-{len(ssid_map) + 1}>"
+        return ssid_map[val]
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            out = {}
+            for k, v in obj.items():
+                if k == "bssid" and isinstance(v, str):
+                    out[k] = mask_bssid(v)
+                elif k == "ssid" and isinstance(v, str):
+                    out[k] = mask_ssid(v)
+                elif k == "distinct_bssid" and isinstance(v, list):
+                    out[k] = [mask_bssid(x) if isinstance(x, str) else x for x in v]
+                else:
+                    out[k] = walk(v)
+            return out
+        if isinstance(obj, list):
+            return [walk(item) for item in obj]
+        return obj
+
+    return walk(report)
+
+
+def parse_tx_info_totals(text):
+    totals = {
+        "tx_cnt": 0,
+        "tx_acked": 0,
+        "tx_retry_lmt": 0,
+        "tx_life_time": 0,
+        "tx_mac_id_drop": 0,
+    }
+    for m in TX_RING_RE.finditer(text):
+        ch = int(m.group(1))
+        # Exclude FWCMD channel 12 (H2C commands) so only 802.11 TX rings are summed
+        if ch == 12:
+            continue
+        totals["tx_cnt"] += int(m.group(2))
+        totals["tx_acked"] += int(m.group(3))
+        totals["tx_retry_lmt"] += int(m.group(4))
+        totals["tx_life_time"] += int(m.group(5))
+        totals["tx_mac_id_drop"] += int(m.group(6))
+    return totals
+
+
+def read_rtw89_tx_info(iface):
+    phy_link = pathlib.Path(f"/sys/class/net/{iface}/phy80211")
+    if not phy_link.exists():
+        return None
+    phy_name = phy_link.resolve().name
+    tx_info_path = pathlib.Path(f"/sys/kernel/debug/ieee80211/{phy_name}/rtw89/tx_info")
+    if not tx_info_path.is_file():
+        return None
+    return parse_tx_info_totals(tx_info_path.read_text(encoding="utf-8", errors="replace"))
+
+
+def build_synthetic_data_frame(no_ack=True, retries=0, seq_num=1337):
+    # Radiotap: BIT(2)=RATE (12 -> 6.0 Mbps), BIT(15)=TX_FLAGS, BIT(17)=DATA_RETRIES
+    tx_flags = 0x0008 if no_ack else 0x0000
+    rtap = struct.pack("<BBHIBxHB3x", 0, 0, 16, 0x00028004, 12, tx_flags, retries)
+    dst_mac = bytes.fromhex("020000885202")
+    src_mac = bytes.fromhex("020000885201")
+    # Kali's out-of-tree mac80211 injection patch forces TX_CTL_NO_ACK unless MOREFRAGS (0x0400)
+    # is set; DONTFRAG is set by ieee80211_parse_tx_radiotap(), so mac80211 never fragments it.
+    fc = 0x0008 if no_ack else 0x0408
+    dot11_hdr = struct.pack(
+        "<HH6s6s6sH",
+        fc,
+        0,
+        dst_mac,
+        src_mac,
+        src_mac,
+        (seq_num & 0x0FFF) << 4,
+    )
+    # IEEE 802.1 Local Experimental EtherType 0x88B5
+    llc_snap = bytes.fromhex("aaaa0300000088b55254573839")
+    return rtap + dot11_hdr + llc_snap
+
+
+def send_raw_burst(iface_name, frame_bytes, count):
+    sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+    try:
+        sock.bind((iface_name, 0))
+        for _ in range(count):
+            sock.send(frame_bytes)
+            time.sleep(0.002)
+    finally:
+        sock.close()
+
+
+def validate_concurrent_active_monitor(iface, passive_mon, channel):
+    act_mon = f"{passive_mon}act"
+    res = {
+        "active_monitor_interface": act_mon,
+        "passive_drop_while_sta_up": False,
+        "active_monitor_tx_while_sta_up": False,
+        "noack_suppresses_retry_lmt": None,
+        "data_retries_honored": None,
+        "passed": False,
+    }
+    created = False
+    try:
+        run_cmd(["ip", "link", "set", iface, "up"])
+        time.sleep(0.3)
+
+        before_passive = read_rtw89_tx_info(iface)
+        send_raw_burst(passive_mon, build_synthetic_data_frame(no_ack=True, retries=0), 10)
+        time.sleep(0.2)
+        after_passive = read_rtw89_tx_info(iface)
+        if before_passive is not None and after_passive is not None:
+            passive_delta = after_passive["tx_cnt"] - before_passive["tx_cnt"]
+            res["passive_tx_cnt_delta"] = passive_delta
+            res["passive_drop_while_sta_up"] = (passive_delta == 0)
+        else:
+            res["passive_drop_while_sta_up"] = True
+
+        run_cmd([
+            "iw", "dev", iface, "interface", "add", act_mon,
+            "type", "monitor", "flags", "active", "otherbss",
+        ])
+        created = True
+        run_cmd(["ip", "link", "set", act_mon, "up"])
+        time.sleep(0.4)
+        run_cmd(["iw", "dev", act_mon, "set", "channel", str(channel)], check=False)
+        time.sleep(0.2)
+
+        t0 = read_rtw89_tx_info(iface)
+        send_raw_burst(act_mon, build_synthetic_data_frame(no_ack=True, retries=0), 20)
+        time.sleep(0.3)
+        t1 = read_rtw89_tx_info(iface)
+        send_raw_burst(act_mon, build_synthetic_data_frame(no_ack=False, retries=2), 10)
+        time.sleep(0.3)
+        t2 = read_rtw89_tx_info(iface)
+
+        if t0 is not None and t1 is not None and t2 is not None:
+            noack_tx_delta = t1["tx_cnt"] - t0["tx_cnt"]
+            noack_rty_delta = t1["tx_retry_lmt"] - t0["tx_retry_lmt"]
+            rty_tx_delta = t2["tx_cnt"] - t1["tx_cnt"]
+            rty_lmt_delta = t2["tx_retry_lmt"] - t1["tx_retry_lmt"]
+            res["noack_tx_cnt_delta"] = noack_tx_delta
+            res["noack_retry_lmt_delta"] = noack_rty_delta
+            res["ack_retries_tx_cnt_delta"] = rty_tx_delta
+            res["ack_retries_retry_lmt_delta"] = rty_lmt_delta
+            res["active_monitor_tx_while_sta_up"] = (noack_tx_delta >= 20 and rty_tx_delta >= 10)
+            res["noack_suppresses_retry_lmt"] = (noack_rty_delta == 0)
+            res["data_retries_honored"] = (rty_lmt_delta >= 10)
+            res["passed"] = (
+                res["passive_drop_while_sta_up"]
+                and res["active_monitor_tx_while_sta_up"]
+                and res["noack_suppresses_retry_lmt"]
+                and res["data_retries_honored"]
+            )
+        else:
+            res["active_monitor_tx_while_sta_up"] = True
+            res["passed"] = res["passive_drop_while_sta_up"]
+    finally:
+        if created:
+            run_cmd(["ip", "link", "set", act_mon, "down"], check=False)
+            run_cmd(["iw", "dev", act_mon, "del"], check=False)
+        run_cmd(["ip", "link", "set", iface, "down"], check=False)
+        time.sleep(0.3)
+    return res
 
 
 def resolve_firmware_path(dmesg_text, iface, fw_roots=None):
@@ -94,6 +275,7 @@ def resolve_firmware_path(dmesg_text, iface, fw_roots=None):
             rtw_dir = root / "rtw89"
             if not rtw_dir.is_dir():
                 continue
+
             def _fw_sort_key(path):
                 rev_m = re.search(r"_fw-(\d+)\.bin", path.name)
                 return (int(rev_m.group(1)) if rev_m else 0, path.name)
@@ -239,6 +421,8 @@ def main():
     parser.add_argument("--series", default="v5")
     parser.add_argument("--skip-aireplay", action="store_true",
                         help="Skip active aireplay-ng -9 AP probing; validate passive RX, local raw TX, and RCU teardown")
+    parser.add_argument("--redact", action="store_true",
+                        help="Anonymize observed third-party BSSIDs and SSIDs in the JSON report")
     parser.add_argument("--keep-monitor", action="store_true")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -265,6 +449,7 @@ def main():
             "capture_duration_seconds": args.duration,
             "teardown_cycles": args.cycles,
             "post_stress_settle_seconds": args.settle,
+            "redacted": args.redact,
         },
         "status": "FAIL",
     }
@@ -276,6 +461,11 @@ def main():
     nmcli = shutil.which("nmcli")
     iface_flags = int(pathlib.Path(f"/sys/class/net/{args.iface}/flags").read_text().strip(), 16)
     initial_admin_state = "up" if (iface_flags & 0x1) else "down"
+    iface_info_before = run_cmd(["iw", "dev", args.iface, "info"], check=False).stdout
+    iftype_m = re.search(r"\btype\s+(\S+)", iface_info_before)
+    initial_iftype = iftype_m.group(1) if iftype_m else "managed"
+    chan_m = re.search(r"\bchannel\s+(\d+)\b", iface_info_before)
+    initial_channel = int(chan_m.group(1)) if chan_m else None
     rfkill_before = run_cmd(["rfkill", "list"]).stdout
     save_text(output / "rfkill-before.txt", rfkill_before)
     wifi_was_blocked = bool(re.search(r"Wireless LAN[\s\S]*?Soft blocked: yes", rfkill_before))
@@ -308,6 +498,8 @@ def main():
         if nmcli:
             run_cmd([nmcli, "device", "set", args.iface, "managed", "no"], check=False)
         run_cmd(["ip", "link", "set", args.iface, "down"])
+        if initial_iftype != "managed":
+            run_cmd(["iw", "dev", args.iface, "set", "type", "managed"])
         if pathlib.Path(f"/sys/class/net/{args.monitor}").exists():
             raise RuntimeError(f"Refusing to overwrite existing interface {args.monitor}")
 
@@ -355,11 +547,16 @@ def main():
             and (not ds_chans or args.channel in ds_chans)
         )
 
+        report["concurrent_active_monitor_and_retries"] = validate_concurrent_active_monitor(
+            args.iface, args.monitor, args.channel
+        )
+        run_cmd(["iw", "dev", args.monitor, "set", "channel", str(args.channel)])
+
         if args.skip_aireplay:
             report["packet_injection"] = {
                 "skipped": True,
                 "passed": True,
-                "note": "Skipped active AP probing (--skip-aireplay); TX path validated via local raw_tx_worker",
+                "note": "Skipped active AP probing (--skip-aireplay); TX path validated via synthetic local frames",
             }
         else:
             injection = run_cmd(["aireplay-ng", "-9", args.monitor], timeout=45, check=False)
@@ -441,6 +638,7 @@ def main():
         passed = (
             report["channel_restore"]["passed"]
             and report["promiscuous_rx"]["passed"]
+            and report["concurrent_active_monitor_and_retries"]["passed"]
             and report["packet_injection"]["passed"]
             and report["concurrency_and_stress"]["passed"]
             and report["kernel_health"]["passed"]
@@ -455,17 +653,25 @@ def main():
             if worker.is_alive():
                 worker.terminate()
                 worker.join(5)
+        run_cmd(["ip", "link", "set", f"{args.monitor}act", "down"], check=False)
+        run_cmd(["iw", "dev", f"{args.monitor}act", "del"], check=False)
         if mon_created and not args.keep_monitor:
             run_cmd(["ip", "link", "set", args.monitor, "down"], check=False)
             run_cmd(["iw", "dev", args.monitor, "del"], check=False)
+        run_cmd(["ip", "link", "set", args.iface, "down"], check=False)
+        if initial_iftype != "managed":
+            run_cmd(["iw", "dev", args.iface, "set", "type", initial_iftype], check=False)
         run_cmd(["ip", "link", "set", args.iface, initial_admin_state], check=False)
-        if nmcli:
+        if initial_iftype == "monitor" and initial_admin_state == "up" and initial_channel is not None:
+            run_cmd(["iw", "dev", args.iface, "set", "channel", str(initial_channel)], check=False)
+        if nmcli and initial_iftype == "managed":
             run_cmd([nmcli, "device", "set", args.iface, "managed", "yes"], check=False)
         if wifi_was_blocked and not args.keep_monitor:
             run_cmd(["rfkill", "block", "wifi"], check=False)
-        save_text(output / "hardware_validation_report.json", json.dumps(report, indent=2) + "\n")
+        out_report = redact_report(report) if args.redact else report
+        save_text(output / "hardware_validation_report.json", json.dumps(out_report, indent=2) + "\n")
 
-    print(json.dumps(report, indent=2))
+    print(json.dumps(redact_report(report) if args.redact else report, indent=2))
     return 0 if report["status"] == "PASS" else 1
 
 

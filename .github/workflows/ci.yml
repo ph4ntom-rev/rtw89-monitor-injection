@@ -7,6 +7,8 @@ on:
   pull_request:
 
 env:
+  # Opt into Node 24 runtime ahead of GitHub's Node 20 deprecation cutoff
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   # Upstream commit the patch series is generated against (v7.4-rc1 merge window)
   KERNEL_BASE: d48723711bae9b8cdc56719c448ba42fef28cbee
 
@@ -33,8 +35,9 @@ jobs:
         run: |
           bash -n scripts/build_module.sh
           bash -n scripts/dkms_prepare.sh
+          bash -n scripts/prepare_submission.sh
           sh -n scripts/dkms_pre_build.sh
-          shellcheck -S warning scripts/build_module.sh scripts/dkms_prepare.sh scripts/dkms_pre_build.sh
+          shellcheck -S warning scripts/build_module.sh scripts/dkms_prepare.sh scripts/prepare_submission.sh scripts/dkms_pre_build.sh
 
       - name: Unit tests
         run: python3 -m unittest discover -s tests -v
@@ -145,12 +148,11 @@ jobs:
             exit 1
           fi
 
-      - name: checkpatch.pl --strict
+      - name: checkpatch.pl --strict and submission preflight
         working-directory: linux
         run: |
           # UNKNOWN_COMMIT_ID: the ids in Fixes: tags cannot be resolved in a shallow clone
-          ./scripts/checkpatch.pl --strict --no-tree --ignore UNKNOWN_COMMIT_ID \
-            ../repo/patches/v5/v5-00*-wifi-*.patch
+          bash ../repo/scripts/prepare_submission.sh --kernel-dir .
 
       - name: Out-of-tree integrator builds against the same kernel
         run: |

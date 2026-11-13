@@ -3,21 +3,22 @@
 [![CI](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml/badge.svg)](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml)
 [![License: GPL-2.0 OR BSD-3-Clause](https://img.shields.io/badge/License-GPL--2.0%20OR%20BSD--3--Clause-blue.svg)](LICENSE)
 
-**[English](README.md) | [Русский](README_RU.md) | [Architecture](docs/ARCHITECTURE.md) | [Validation](docs/PREFLIGHT_VALIDATION.md)**
+**[English](README.md) | [Русский](README_RU.md) | [Architecture](docs/ARCHITECTURE.md) | [Validation & Evidence](docs/PREFLIGHT_VALIDATION.md)**
 
 Patches for the mainline Linux `rtw89` driver (Realtek RTL8851B/8852A/8852B/8852C/8922A)
 that fix monitor mode reception across scan/ROC/MAC restores, enable raw 802.11 frame
-injection (`aireplay-ng`, radiotap TX) on a standalone monitor interface, and restore the
-operating channel across monitor interface restarts. Firmware is not modified.
+injection (`aireplay-ng`, radiotap TX, `DATA_RETRIES`, `NO_ACK`) on standalone and
+`MONITOR_FLAG_ACTIVE` monitor interfaces, and restore the operating channel when leaving
+idle across monitor restarts. Firmware is not modified.
 
 ## Status
 
 | | |
 | :--- | :--- |
 | Current series | [`patches/v5/`](patches/v5/), 10 patches, base `torvalds/linux` [`d48723711bae`](https://github.com/torvalds/linux/commit/d48723711bae9b8cdc56719c448ba42fef28cbee) (7.4-rc1 merge window) |
-| Mailing list | v3 [posted](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/) on 2026-11-05, waiting for review. v4 was never sent. v5 is verified and ready to send after v3 review. |
-| Build & static checks | Each patch builds on its own; `W=1` and sparse (`C=1`) with `CONFIG_PROVE_LOCKING=y` show 0 new warnings; `checkpatch.pl --strict` reports 0 errors/warnings/checks; `patch_rtw89.py` verified across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` with Kbuild `make W=1 C=1 modules` on LTS `v6.6`, `v6.12`, `v6.18`, and `v7.4-rc1` in [CI](.github/workflows/ci.yml). |
-| Runtime & FW verification | **RTL8852AE** (`10ec:8852`, firmware `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — firmware-verified and runtime-validated on **v5**, see [validation](docs/PREFLIGHT_VALIDATION.md). |
+| Mailing list | v3 [posted](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/) on 2026-11-05, waiting for review. v4 was never sent. v5 is preflight-checked (`scripts/prepare_submission.sh`) and staged locally for submission after v3 review. |
+| Build & static checks | Each patch builds on its own; `W=1` and sparse (`C=1`) with `CONFIG_PROVE_LOCKING=y` show `0` new warnings; `checkpatch.pl --strict` reports `0` errors/warnings/checks; `patch_rtw89.py` verified across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` with Kbuild `make W=1 C=1 modules` on LTS `v6.6`, `v6.12`, `v6.18`, and `v7.4-rc1` in [CI](.github/workflows/ci.yml). |
+| Runtime & FW verification | **RTL8852AE** (`10ec:8852`, firmware `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — verified in IDA Pro 9.5 and live-tested via `tracefs`/kprobes + `verify_hardware.py` (`PASS`), see [validation & screenshots](docs/PREFLIGHT_VALIDATION.md). |
 | Not runtime-tested | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB devices, DBCC. |
 
 ## The v5 series
@@ -25,23 +26,30 @@ operating channel across monitor interface restarts. Firmware is not modified.
 | # | Patch | Kind |
 | :-- | :--- | :--- |
 | 1 | `wifi: rtw89: avoid NULL vif dereference in rtw89_ops_tx()` | fix, `Fixes:` + `Cc: stable` |
-| 2 | `wifi: rtw89: handle negative rate index for injected frames` | fix, `Fixes:` |
-| 3 | `wifi: rtw89: fix RX filter configuration for monitor mode` | fix |
+| 2 | `wifi: rtw89: handle negative rate index for injected frames` | fix, `Fixes:` + `Cc: stable` |
+| 3 | `wifi: rtw89: fix RX filter configuration for monitor mode` | fix (`B_AX_SNIFFER_MODE` + `FIF_OTHER_BSS`) |
 | 4 | `wifi: rtw89: protect pure_monitor_mode_vif with RCU` | RCU + sole-monitor tracking |
 | 5 | `wifi: rtw89: use AP self role for monitor interfaces` | injection (FW `0.13.36.2` verified) |
-| 6 | `wifi: rtw89: transmit frames from a standalone monitor interface` | injection |
+| 6 | `wifi: rtw89: transmit frames from monitor interfaces` | injection (standalone + `MONITOR_FLAG_ACTIVE`) |
 | 7 | `wifi: rtw89: send injected control frames through the management path` | injection |
 | 8 | `wifi: rtw89: skip host-side TX hooks for injected frames` | injection |
-| 9 | `wifi: rtw89: honor ASSIGN_SEQ and NO_ACK for injected frames` | injection |
-| 10 | `wifi: rtw89: restore channel after monitor restart on non-chanctx devices` | fix |
+| 9 | `wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for injected frames` | injection (`max_rate_tries`, `NO_ACK` status) |
+| 10 | `wifi: rtw89: restore channel when leaving idle on non-chanctx devices` | fix (`CONF_CHANGE_IDLE \| MONITOR`) |
 
 Details of every patch and the `rtw89_mon` out-of-tree layer are in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the
-[cover letter](patches/v5/v5-0000-cover-letter.patch).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the
+[cover letter](patches/v5/v5-0000-cover-letter.patch), and
+[docs/PREFLIGHT_VALIDATION.md](docs/PREFLIGHT_VALIDATION.md).
+
+![End-to-End Hardware Validation Summary](docs/evidence/screenshots/04_hardware_validation_summary.png)
 
 > [!NOTE]
-> Injection requires a **standalone** monitor interface: no station or AP interface may be
-> open on the same card. Otherwise injected frames are dropped cleanly (patches 1 and 6).
+> **Passive vs Active Monitor TX:** A passive monitor interface (`iw ... type monitor`
+> without `flags active`) transmits only when it is the sole open interface on the card; if
+> a station or AP interface is up, passive monitor TX is dropped cleanly. To inject frames
+> concurrently while a station or AP interface remains open (preserving hardware Auto-ACK),
+> create an active monitor interface (`NL80211_FEATURE_ACTIVE_MONITOR`):
+> `sudo iw dev wlan0 interface add mon0act type monitor flags active otherbss`.
 
 ## Usage
 
@@ -50,6 +58,13 @@ Details of every patch and the `rtw89_mon` out-of-tree layer are in
 ```bash
 cd linux
 git am /path/to/rtw89-monitor-injection/patches/v5/v5-00*-wifi-*.patch
+```
+
+To run local read-only submission preflight checks (`checkpatch.pl --strict`, trailer
+checks, and dry-run command generation without sending mail):
+
+```bash
+bash scripts/prepare_submission.sh --kernel-dir /path/to/linux
 ```
 
 ### B. Distribution kernel, one-off build
@@ -94,12 +109,17 @@ series, re-run `dkms_prepare.sh` with the matching `linux-source` archive. Remov
 ### Monitor mode and injection
 
 ```bash
+# Standalone monitor interface
 sudo ip link set wlan0 down
 sudo iw dev wlan0 set type monitor
 sudo ip link set wlan0 up
 sudo iw dev wlan0 set freq 2412
 sudo tcpdump -i wlan0 -e -c 30
-sudo aireplay-ng -9 wlan0
+
+# Or concurrent active monitor alongside managed wlan0
+sudo iw dev wlan0 interface add mon0act type monitor flags active otherbss
+sudo ip link set dev mon0act address 02:00:00:88:52:10
+sudo ip link set mon0act up
 ```
 
 ## Repository layout
@@ -109,10 +129,10 @@ patches/v5/            current 10-patch series + cover letter
 patches/v2..v4/        earlier versions, kept for reference
 src/rtw89_mon.{c,h}    helper code linked into rtw89_core by patch_rtw89.py
 scripts/               patch_rtw89.py, build_module.sh, dkms_prepare.sh, dkms_pre_build.sh,
-                       verify_hardware.py, verify_monitor_diag.py
+                       prepare_submission.sh, verify_hardware.py, verify_monitor_diag.py
 dkms/dkms.conf.in      DKMS template used by dkms_prepare.sh
 tests/                 unit tests for patch_rtw89.py and patch series hygiene
-docs/                  architecture notes and hardware validation report
+docs/                  architecture notes, hardware validation report, and evidence/
 ```
 
 ## Legal and regulatory

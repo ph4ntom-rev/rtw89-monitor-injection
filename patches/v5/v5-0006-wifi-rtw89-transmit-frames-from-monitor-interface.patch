@@ -1,0 +1,302 @@
+From 89a64a0127b255d8d692ec05b43b8109cbaa811f Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Tue, 10 Nov 2026 18:06:00 +0500
+Subject: [PATCH v5 06/10] wifi: rtw89: transmit frames from monitor interfaces
+
+Frames injected on a monitor interface reach the driver either through
+rtw89_ops_tx() (with info->control.vif == NULL for a passive monitor,
+info->control.vif == &sdata->vif for MONITOR_FLAG_ACTIVE, or a running
+interface matched by addr2) or, for injected data frames whose addr2
+matches an active interface, via wake_tx_queue and
+rtw89_core_txq_push().
+
+Passing local->monitor_sdata directly is racy because
+ieee80211_del_virtual_monitor() calls drv_remove_interface() before
+clearing local->monitor_sdata, so mac80211 may still pass a tearing-down
+monitor vif to rtw89_ops_tx() after the driver has released its MAC ID
+and port.
+
+In rtw89_ops_tx(), require an active PHY entity and resolve passive
+monitor TX through rtwdev->pure_monitor_mode_vif under rcu_read_lock(),
+while permitting concurrent MONITOR_FLAG_ACTIVE interfaces to transmit
+through their own driver vif while rtwvif->mon_tx_ready is set (clearing
+mon_tx_ready and coalescing synchronize_rcu() before teardown). Track
+active driver monitor vifs in rtwdev->monitor_vifs via
+rtw89_is_monitoring() so concurrent MONITOR_FLAG_ACTIVE interfaces
+reserve radiotap headroom and enable PHY status parsing (parsing scan
+channel IEs before pushing radiotap headers), and verify skb_headlen()
+in rtw89_core_tx_write_link() before reading skb->data.
+
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/core.c     | 22 ++++--
+ drivers/net/wireless/realtek/rtw89/core.h     | 10 ++-
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 71 ++++++++++++++++---
+ drivers/net/wireless/realtek/rtw89/phy.c      |  2 +-
+ 4 files changed, 88 insertions(+), 17 deletions(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
+index e82285a..1376329 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.c
++++ b/drivers/net/wireless/realtek/rtw89/core.c
+@@ -1450,6 +1450,14 @@ static int rtw89_core_tx_write_link(struct rtw89_dev *rtwdev,
+ 	struct rtw89_core_tx_request tx_req = {};
+ 	int ret;
+ 
++	if (unlikely(IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_INJECTED)) {
++		struct ieee80211_hdr *hdr = (void *)skb->data;
++
++		if (skb_headlen(skb) < sizeof(struct ieee80211_cts) ||
++		    skb_headlen(skb) < ieee80211_hdrlen(hdr->frame_control))
++			return -EINVAL;
++	}
++
+ 	tx_req.skb = skb;
+ 	tx_req.vif = vif;
+ 	tx_req.sta = sta;
+@@ -2258,7 +2266,7 @@ static int rtw89_core_process_phy_status_ie(struct rtw89_dev *rtwdev,
+ 	 * scanning that needs to get chan_idx in IE01.
+ 	 */
+ 	accept = phy_ppdu->to_self || ie == RTW89_PHYSTS_IE01_CMN_OFDM ||
+-		 rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR;
++		 rtw89_is_monitoring(rtwdev);
+ 	if (!accept)
+ 		return 0;
+ 
+@@ -2341,8 +2349,7 @@ static int rtw89_core_rx_parse_phy_sts(struct rtw89_dev *rtwdev,
+ 	u16 ie_len;
+ 
+ 	/* for normal mode, mark invalid reports and bypass them */
+-	accept = phy_ppdu->ie >= RTW89_CCK_PKT ||
+-		 rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR;
++	accept = phy_ppdu->ie >= RTW89_CCK_PKT || rtw89_is_monitoring(rtwdev);
+ 	if (!accept)
+ 		return -EINVAL;
+ 
+@@ -3231,7 +3238,7 @@ void rtw89_core_update_rx_status_by_ppdu(struct rtw89_dev *rtwdev,
+ 					 struct ieee80211_rx_status *rx_status,
+ 					 struct rtw89_rx_phy_ppdu *phy_ppdu)
+ {
+-	if (!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR))
++	if (!rtw89_is_monitoring(rtwdev))
+ 		return;
+ 
+ 	if (!phy_ppdu)
+@@ -3803,7 +3810,7 @@ static void rtw89_core_update_radiotap(struct rtw89_dev *rtwdev,
+ 				       struct ieee80211_rx_status *rx_status,
+ 				       struct rtw89_rx_phy_ppdu *phy_ppdu)
+ {
+-	if (!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR))
++	if (!rtw89_is_monitoring(rtwdev))
+ 		return;
+ 
+ 	/*
+@@ -4029,9 +4036,9 @@ static void rtw89_core_rx_to_mac80211(struct rtw89_dev *rtwdev,
+ 	rtw89_core_hw_to_sband_rate(rx_status);
+ 	rtw89_core_rx_stats(rtwdev, phy_ppdu, desc_info, skb);
+ 	rtw89_core_update_rx_status_by_ppdu(rtwdev, rx_status, phy_ppdu);
+-	rtw89_core_update_radiotap(rtwdev, desc_info, skb, rx_status, phy_ppdu);
+ 	rtw89_core_validate_rx_signal(rx_status);
+ 	rtw89_core_update_rx_freq_from_ie(rtwdev, skb, rx_status);
++	rtw89_core_update_radiotap(rtwdev, desc_info, skb, rx_status, phy_ppdu);
+ 	rtw89_core_correct_mcc_chan(rtwdev, desc_info, rx_status, phy_ppdu);
+ 
+ 	/* In low power mode, it does RX in thread context. */
+@@ -7565,7 +7572,8 @@ static int rtw89_core_register_hw(struct rtw89_dev *rtwdev)
+ 		hw->wiphy->num_iftype_ext_capab = ARRAY_SIZE(rtw89_iftypes_ext_capa);
+ 	}
+ 
+-	hw->wiphy->features |= NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR;
++	hw->wiphy->features |= NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR |
++			       NL80211_FEATURE_ACTIVE_MONITOR;
+ 
+ 	hw->wiphy->max_scan_ssids = RTW89_SCANOFLD_MAX_SSID;
+ 	hw->wiphy->max_scan_ie_len = RTW89_SCANOFLD_MAX_IE_LEN;
+diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
+index c7e6ee2..4345b3e 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.h
++++ b/drivers/net/wireless/realtek/rtw89/core.h
+@@ -7815,6 +7815,7 @@ struct rtw89_dev {
+ 
+ 	struct rtw89_debugfs *debugfs;
+ 	struct rtw89_vif __rcu *pure_monitor_mode_vif;
++	unsigned int monitor_vifs;
+ 	struct rtw89_led led;
+ 
+ 	/* HCI related data, keep last */
+@@ -7852,6 +7853,7 @@ struct rtw89_vif {
+ 	struct rtw89_roc roc;
+ 	bool offchan;
+ 	bool burst_active;
++	bool mon_tx_ready;
+ 
+ 	enum rtw89_mlo_mode mlo_mode;
+ 	struct rtw89_vif_ml_trans ml_trans;
+@@ -9305,12 +9307,18 @@ static inline struct rtw89_fw_suit *rtw89_fw_suit_get(struct rtw89_dev *rtwdev,
+ 	return &fw_info->normal;
+ }
+ 
++static inline bool rtw89_is_monitoring(struct rtw89_dev *rtwdev)
++{
++	return (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR) ||
++	       READ_ONCE(rtwdev->monitor_vifs);
++}
++
+ static inline struct sk_buff *rtw89_alloc_skb_for_rx(struct rtw89_dev *rtwdev,
+ 						     unsigned int length)
+ {
+ 	struct sk_buff *skb;
+ 
+-	if (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR) {
++	if (rtw89_is_monitoring(rtwdev)) {
+ 		skb = dev_alloc_skb(length + RTW89_RADIOTAP_ROOM);
+ 		if (!skb)
+ 			return NULL;
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index e67cb2f..c2b3761 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -16,6 +16,12 @@
+ #include "util.h"
+ #include "wow.h"
+ 
++static bool rtw89_has_active_entity(struct rtw89_dev *rtwdev)
++{
++	return rtw89_get_entity_state(rtwdev, RTW89_PHY_0) ||
++	       (rtwdev->dbcc_en && rtw89_get_entity_state(rtwdev, RTW89_PHY_1));
++}
++
+ static void rtw89_ops_tx(struct ieee80211_hw *hw,
+ 			 struct ieee80211_tx_control *control,
+ 			 struct sk_buff *skb)
+@@ -28,28 +34,56 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
+ 	struct rtw89_vif *rtwvif;
+ 	int ret, qsel;
+ 
+-	if (unlikely(!vif)) {
+-		ieee80211_free_txskb(hw, skb);
+-		return;
+-	}
++	rcu_read_lock();
+ 
+-	rtwvif = vif_to_rtwvif(vif);
++	if (unlikely(!vif || vif->type == NL80211_IFTYPE_MONITOR)) {
++		if (!rtw89_has_active_entity(rtwdev)) {
++			ieee80211_free_txskb(hw, skb);
++			goto out;
++		}
++
++		/* Passive monitors pass vif == NULL and are only permitted to
++		 * transmit when a standalone monitor vif is the sole active
++		 * interface; active monitors (MONITOR_FLAG_ACTIVE) pass their
++		 * own driver vif and may transmit concurrently while
++		 * mon_tx_ready is set. Both paths unpublish and wait for an
++		 * RCU grace period before releasing link, port, and MAC ID.
++		 */
++		rtwvif = rcu_dereference(rtwdev->pure_monitor_mode_vif);
++		if (!rtwvif && vif) {
++			rtwvif = vif_to_rtwvif(vif);
++			if (!READ_ONCE(rtwvif->mon_tx_ready))
++				rtwvif = NULL;
++		}
++		if (!rtwvif) {
++			ieee80211_free_txskb(hw, skb);
++			goto out;
++		}
++
++		vif = rtwvif_to_vif(rtwvif);
++		info->control.vif = vif;
++	} else {
++		rtwvif = vif_to_rtwvif(vif);
++	}
+ 
+ 	if (rtwvif->offchan && !(flags & IEEE80211_TX_CTL_TX_OFFCHAN) && sta) {
+ 		struct rtw89_sta *rtwsta = sta_to_rtwsta(sta);
+ 
+ 		rtw89_debug(rtwdev, RTW89_DBG_TXRX, "ops_tx during offchan\n");
+ 		skb_queue_tail(&rtwsta->roc_queue, skb);
+-		return;
++		goto out;
+ 	}
+ 
+ 	ret = rtw89_core_tx_write(rtwdev, vif, sta, skb, &qsel);
+ 	if (ret) {
+ 		rtw89_err(rtwdev, "failed to transmit skb: %d\n", ret);
+ 		ieee80211_free_txskb(hw, skb);
+-		return;
++		goto out;
+ 	}
+ 	rtw89_core_tx_kick_off(rtwdev, qsel);
++
++out:
++	rcu_read_unlock();
+ }
+ 
+ static void rtw89_ops_wake_tx_queue(struct ieee80211_hw *hw,
+@@ -272,6 +306,13 @@ static int rtw89_ops_add_interface(struct ieee80211_hw *hw,
+ 	if (ret)
+ 		goto unset_link;
+ 
++	if (vif->type == NL80211_IFTYPE_MONITOR) {
++		WRITE_ONCE(rtwvif->mon_tx_ready, true);
++		WRITE_ONCE(rtwdev->monitor_vifs, rtwdev->monitor_vifs + 1);
++		if (rtwdev->monitor_vifs == 1 &&
++		    test_bit(RTW89_FLAG_POWERON, rtwdev->flags))
++			rtw89_physts_parsing_init(rtwdev);
++	}
+ 	rtw89_recalc_pure_monitor_vif(rtwdev, NULL, true);
+ 	rtw89_recalc_lps(rtwdev);
+ 	return 0;
+@@ -295,6 +336,7 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+ 	u8 macid = rtw89_vif_get_main_macid(rtwvif);
+ 	u8 port = rtw89_vif_get_main_port(rtwvif);
+ 	struct rtw89_vif_link *rtwvif_link;
++	bool need_sync;
+ 
+ 	lockdep_assert_wiphy(hw->wiphy);
+ 
+@@ -302,7 +344,13 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+ 		    vif->addr, vif->type, vif->p2p);
+ 
+ 	/* unpublish before tearing down the link, port and MAC ID */
+-	rtw89_recalc_pure_monitor_vif(rtwdev, rtwvif, true);
++	need_sync = rtw89_recalc_pure_monitor_vif(rtwdev, rtwvif, false);
++	if (vif->type == NL80211_IFTYPE_MONITOR && rtwvif->mon_tx_ready) {
++		WRITE_ONCE(rtwvif->mon_tx_ready, false);
++		need_sync = true;
++	}
++	if (need_sync)
++		synchronize_rcu();
+ 
+ 	wiphy_delayed_work_cancel(hw->wiphy, &rtwvif->roc.roc_work);
+ 
+@@ -323,6 +371,13 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+ 	rtw89_core_release_bit_map(rtwdev->hw_port, port);
+ 	rtw89_release_mac_id(rtwdev, macid);
+ 
++	if (vif->type == NL80211_IFTYPE_MONITOR && rtwdev->monitor_vifs) {
++		WRITE_ONCE(rtwdev->monitor_vifs, rtwdev->monitor_vifs - 1);
++		if (!rtwdev->monitor_vifs &&
++		    test_bit(RTW89_FLAG_POWERON, rtwdev->flags))
++			rtw89_physts_parsing_init(rtwdev);
++	}
++
+ 	rtw89_recalc_lps(rtwdev);
+ 	rtw89_enter_ips_by_hwflags(rtwdev);
+ }
+diff --git a/drivers/net/wireless/realtek/rtw89/phy.c b/drivers/net/wireless/realtek/rtw89/phy.c
+index 795920b..c04fbcf 100644
+--- a/drivers/net/wireless/realtek/rtw89/phy.c
++++ b/drivers/net/wireless/realtek/rtw89/phy.c
+@@ -7183,7 +7183,7 @@ static void __rtw89_physts_parsing_init(struct rtw89_dev *rtwdev,
+ 	u32 val;
+ 	u8 i;
+ 
+-	if (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR) {
++	if (rtw89_is_monitoring(rtwdev)) {
+ 		monitor_mode_mu_ies = BIT(RTW89_PHYSTS_IE09_FTR_0);
+ 		if (phy->physt_gen < 2)
+ 			monitor_mode_mu_ies |= BIT(RTW89_PHYSTS_IE10_FTR_PLCP_EXT);
+-- 
+2.56.0.windows.4
+

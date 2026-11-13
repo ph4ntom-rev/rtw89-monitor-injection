@@ -4,7 +4,8 @@
 patch_rtw89.py
 
 Automated cross-kernel source integrator for rtw89 monitor mode, standalone
-raw frame injection, and monitor restart channel restoration (PATCH v5, best effort).
+& active monitor raw frame injection, and idle/monitor channel restoration
+(PATCH v5, best effort).
 
 Supported kernel driver generations:
   - API Gen 1: Linux 6.1 - 6.12 (legacy struct rtw89_vif, rtwdev->mutex)
@@ -29,9 +30,12 @@ BACKUP_TARGETS = (
     "Kbuild",
     "core.h",
     "core.c",
+    "mac.h",
     "mac80211.c",
     "mac.c",
     "mac_be.c",
+    "pci.c",
+    "phy.c",
     "fw.c",
 )
 
@@ -50,6 +54,11 @@ def detect_tree_features(rtw89_dir: Path) -> dict:
     chan_h_text = (
         (rtw89_dir / "chan.h").read_text(encoding="utf-8", errors="replace")
         if (rtw89_dir / "chan.h").is_file()
+        else ""
+    )
+    phy_h_text = (
+        (rtw89_dir / "phy.h").read_text(encoding="utf-8", errors="replace")
+        if (rtw89_dir / "phy.h").is_file()
         else ""
     )
     mac80211_text = (
@@ -98,6 +107,12 @@ def detect_tree_features(rtw89_dir: Path) -> dict:
     has_chip_get_ch_dma = "rtw89_chip_get_ch_dma" in text or "rtw89_chip_get_ch_dma" in core_c_text
     has_chip_be = "RTW89_HW_RATE_V1_MCS0" in text and "RTW89_CHIP_BE" in text
     has_upd_wlan_hdr = bool(re.search(r"\bbool\s+upd_wlan_hdr\s*;", text))
+    has_physts_init = bool(
+        re.search(
+            r"\bvoid\s+rtw89_physts_parsing_init\s*\(\s*struct\s+rtw89_dev\s*\*\s*\w*\s*\)\s*;",
+            phy_h_text,
+        )
+    )
 
     return {
         "api_gen": 2 if has_vif_link else 1,
@@ -114,6 +129,7 @@ def detect_tree_features(rtw89_dir: Path) -> dict:
         "has_chip_get_ch_dma": has_chip_get_ch_dma,
         "has_chip_be": has_chip_be,
         "has_upd_wlan_hdr": has_upd_wlan_hdr,
+        "has_physts_init": has_physts_init,
         "host_os": platform.system(),
         "host_release": platform.release(),
     }
@@ -251,6 +267,31 @@ def patch_core_h(core_h_path: Path) -> tuple:
                 changed = True
                 patched_txd_ext = True
 
+    span_alloc = find_c_function_span(txt, "rtw89_alloc_skb_for_rx")
+    if span_alloc:
+        body = txt[span_alloc[1]:span_alloc[2]]
+        if "rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR" in body:
+            body = body.replace(
+                "rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR",
+                "rtw89_mon_is_monitoring(rtwdev)",
+                1,
+            )
+            txt = txt[:span_alloc[1]] + body + txt[span_alloc[2]:]
+            if "bool rtw89_mon_is_monitoring(" not in txt:
+                fwd_m = re.search(r"^struct\s+rtw89_dev\s*;\s*$", txt, re.MULTILINE)
+                decl = (
+                    f"\n/* {MARKER} */\n"
+                    "#ifndef __RTW89_MON_IS_MONITORING_DECL\n"
+                    "#define __RTW89_MON_IS_MONITORING_DECL\n"
+                    "bool rtw89_mon_is_monitoring(struct rtw89_dev *rtwdev);\n"
+                    "#endif"
+                )
+                if fwd_m:
+                    txt = txt[:fwd_m.end()] + decl + txt[fwd_m.end():]
+                else:
+                    txt = decl.lstrip("\n") + "\n" + txt
+            changed = True
+
     if changed:
         core_h_path.write_text(txt, encoding="utf-8", newline="\n")
     return (patched_rcu, patched_txd_ext, changed)
@@ -259,7 +300,7 @@ def patch_core_h(core_h_path: Path) -> tuple:
 def refine_direct_rx_fltr_restores(src: str) -> tuple:
     """Ensure direct B_AX_RX_FLTR_CFG_MASK restores (scan/ROC on <= 6.18) refine monitor bits."""
     pat = re.compile(r"(B_AX_RX_FLTR_CFG_MASK\s*,\s*)(rtwdev->hal\.rx_fltr)\b")
-    new_src, cnt = pat.subn(r"\1rtw89_mon_refine_rx_fltr(\2)", src)
+    new_src, cnt = pat.subn(r"\1rtw89_mon_refine_rx_fltr(rtwdev, \2)", src)
     return (new_src, cnt > 0)
 
 
@@ -303,6 +344,33 @@ def patch_core_c(
                 )
                 src = src[:span_rfk[1]] + body + src[span_rfk[2]:]
                 notes.append("updated rtw89_chip_rfk_channel_for_pure_mon_vif() RCU dereference")
+
+    # 0b. Enable radiotap updates for concurrent monitor VIFs & parse freq IE before skb_push
+    span_rtap = find_c_function_span(src, "rtw89_core_update_radiotap")
+    if span_rtap:
+        body = src[span_rtap[1]:span_rtap[2]]
+        old_mon = "if (!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR))"
+        if old_mon in body:
+            body = body.replace(old_mon, "if (!rtw89_mon_is_monitoring(rtwdev))", 1)
+            src = src[:span_rtap[1]] + body + src[span_rtap[2]:]
+            notes.append("enabled rtw89_core_update_radiotap() for concurrent monitor VIFs")
+
+    span_rx_mac = find_c_function_span(src, "rtw89_core_rx_to_mac80211")
+    if span_rx_mac:
+        body = src[span_rx_mac[1]:span_rx_mac[2]]
+        rx_order_m = re.search(
+            r"(\trtw89_core_update_radiotap\([^\n]+;\n)(\trtw89_core_update_rx_freq_from_ie\([^\n]+;\n)",
+            body,
+        )
+        if rx_order_m:
+            body = (
+                body[:rx_order_m.start()]
+                + rx_order_m.group(2)
+                + rx_order_m.group(1)
+                + body[rx_order_m.end():]
+            )
+            src = src[:span_rx_mac[1]] + body + src[span_rx_mac[2]:]
+            notes.append("reordered rtw89_core_update_rx_freq_from_ie() before radiotap skb_push")
 
     # 1. rtw89_core_get_tx_type -> route injected non-Data (e.g. 10-16B Control) frames via MGMT.
     span_tx_type = find_c_function_span(src, "rtw89_core_get_tx_type")
@@ -679,7 +747,7 @@ def patch_mac80211_c(mac_c_path: Path, pure_mon_rcu: bool) -> list:
     src = src[:span[1]] + body + src[span[2]:]
     notes.append("hooked rtw89_ops_tx() with RCU protection and skb_headlen() guards")
 
-    # 2. rtw89_ops_config -> restore channel on monitor mode restart for non-chanctx chips
+    # 2. rtw89_ops_config -> restore channel when leaving idle / toggling monitor on non-chanctx chips
     span_cfg = find_c_function_span(src, "rtw89_ops_config")
     if not span_cfg:
         raise RuntimeError("Function rtw89_ops_config not found in mac80211.c")
@@ -820,7 +888,7 @@ def patch_mac_c(mac_c_path: Path) -> list:
         body = src[span_set[1]:span_set[2]]
         m = re.search(r"\n\n", body)
         if m and "rtw89_mon_refine_rx_fltr" not in body:
-            hook = f"\n\n\t/* {MARKER} */\n\trx_fltr = rtw89_mon_refine_rx_fltr(rx_fltr);"
+            hook = f"\n\n\t/* {MARKER} */\n\trx_fltr = rtw89_mon_refine_rx_fltr(rtwdev, rx_fltr);"
             body = body[:m.start()] + hook + body[m.start():]
             src = src[:span_set[1]] + body + src[span_set[2]:]
             changed = True
@@ -834,7 +902,7 @@ def patch_mac_c(mac_c_path: Path) -> list:
             if old_line in body:
                 body = body.replace(
                     old_line,
-                    f"\t/* {MARKER} */\n\tmac_ftlr = rtw89_mon_refine_rx_fltr(rtwdev->hal.rx_fltr);",
+                    f"\t/* {MARKER} */\n\tmac_ftlr = rtw89_mon_refine_rx_fltr(rtwdev, rtwdev->hal.rx_fltr);",
                     1,
                 )
                 src = src[:span_ax[1]] + body + src[span_ax[2]:]
@@ -863,7 +931,7 @@ def patch_mac_be_c(mac_be_c_path: Path) -> list:
         if old_line in body:
             body = body.replace(
                 old_line,
-                f"\t/* {MARKER} */\n\trtw89_write32(rtwdev, reg, rtw89_mon_refine_rx_fltr(rtwdev->hal.rx_fltr));",
+                f"\t/* {MARKER} */\n\trtw89_write32(rtwdev, reg, rtw89_mon_refine_rx_fltr(rtwdev, rtwdev->hal.rx_fltr));",
                 1,
             )
             src = src[:span_be[1]] + body + src[span_be[2]:]
@@ -871,6 +939,89 @@ def patch_mac_be_c(mac_be_c_path: Path) -> list:
             mac_be_c_path.write_text(src, encoding="utf-8", newline="\n")
             notes.append("refined rx_fltr in rx_fltr_init_be()")
     return notes
+
+
+def patch_pci_c(pci_c_path: Path) -> list:
+    if not pci_c_path.is_file():
+        return []
+    src = pci_c_path.read_text(encoding="utf-8", errors="replace")
+    if MARKER in src:
+        return ["pci.c already patched"]
+
+    span = find_c_function_span(src, "rtw89_pci_tx_status")
+    if not span:
+        return []
+
+    body = src[span[1]:span[2]]
+    new_body, cnt = re.subn(
+        r"(\bif\s*\(tx_status\s*==\s*RTW89_TX_DONE\)\s*(?:\{[^{}]*\}|[^\n;]+;)\s*)else\s*\{",
+        rf"/* {MARKER} */\n\t\1else if (!(info->flags & IEEE80211_TX_CTL_NO_ACK) ||\n"
+        r"\t\t   tx_status != RTW89_TX_RETRY_LIMIT) {",
+        body,
+        count=1,
+    )
+    if not cnt:
+        return []
+
+    src = src[:span[1]] + new_body + src[span[2]:]
+    pci_c_path.write_text(src, encoding="utf-8", newline="\n")
+    return ["suppressed false tx_retry_lmt on NO_ACK in rtw89_pci_tx_status()"]
+
+
+def patch_mac_h(mac_h_path: Path) -> list:
+    if not mac_h_path.is_file():
+        return []
+    src = mac_h_path.read_text(encoding="utf-8", errors="replace")
+    if MARKER in src:
+        return ["mac.h already patched"]
+
+    span = find_c_function_span(src, "rtw89_tx_rpt_tx_status")
+    if not span:
+        return []
+
+    body = src[span[1]:span[2]]
+    anchor = "\tieee80211_tx_info_clear_status(info);\n"
+    if anchor not in body or "IEEE80211_TX_STAT_NOACK_TRANSMITTED" in body:
+        return []
+
+    body = body.replace(
+        anchor,
+        anchor
+        + f"\n\t/* {MARKER} */\n"
+        + "\tif (info->flags & IEEE80211_TX_CTL_NO_ACK)\n"
+        + "\t\tinfo->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;\n",
+        1,
+    )
+    src = src[:span[1]] + body + src[span[2]:]
+    mac_h_path.write_text(src, encoding="utf-8", newline="\n")
+    return ["set IEEE80211_TX_STAT_NOACK_TRANSMITTED in rtw89_tx_rpt_tx_status()"]
+
+
+def patch_phy_c(phy_c_path: Path) -> list:
+    if not phy_c_path.is_file():
+        return []
+    src = phy_c_path.read_text(encoding="utf-8", errors="replace")
+    if MARKER in src:
+        return ["phy.c already patched"]
+
+    for fn_name in ("__rtw89_physts_parsing_init", "rtw89_physts_parsing_init"):
+        span = find_c_function_span(src, fn_name)
+        if not span:
+            continue
+        body = src[span[1]:span[2]]
+        old_cond = "if (rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR)"
+        if old_cond in body:
+            body = body.replace(
+                old_cond,
+                f"/* {MARKER} */\n\tif (rtw89_mon_is_monitoring(rtwdev))",
+                1,
+            )
+            src = src[:span[1]] + body + src[span[2]:]
+            src = insert_include(src)
+            phy_c_path.write_text(src, encoding="utf-8", newline="\n")
+            return [f"enabled PHYSTS monitor IEs for concurrent monitors in {fn_name}()"]
+
+    return []
 
 
 def patch_fw_c(fw_c_path: Path, has_set_rx_fltr: bool) -> list:
@@ -948,6 +1099,9 @@ def apply_tree(rtw89_dir: Path) -> dict:
     mac80211_notes = patch_mac80211_c(rtw89_dir / "mac80211.c", pure_mon_rcu)
     mac_notes = patch_mac_c(rtw89_dir / "mac.c")
     mac_be_notes = patch_mac_be_c(rtw89_dir / "mac_be.c")
+    pci_notes = patch_pci_c(rtw89_dir / "pci.c")
+    mac_h_notes = patch_mac_h(rtw89_dir / "mac.h")
+    phy_notes = patch_phy_c(rtw89_dir / "phy.c")
     fw_notes = patch_fw_c(rtw89_dir / "fw.c", feats["has_set_rx_fltr"])
 
     autoconf = (
@@ -969,7 +1123,8 @@ def apply_tree(rtw89_dir: Path) -> dict:
         f"#define RTW89_MON_HAS_CHANCTX_0 {1 if feats['has_chanctx_0'] else 0}\n"
         f"#define RTW89_MON_HAS_CHIP_GET_CH_DMA {1 if feats['has_chip_get_ch_dma'] else 0}\n"
         f"#define RTW89_MON_HAS_CHIP_BE {1 if feats['has_chip_be'] else 0}\n"
-        f"#define RTW89_MON_HAS_UPD_WLAN_HDR {1 if feats['has_upd_wlan_hdr'] else 0}\n\n"
+        f"#define RTW89_MON_HAS_UPD_WLAN_HDR {1 if feats['has_upd_wlan_hdr'] else 0}\n"
+        f"#define RTW89_MON_HAS_PHYSTS_INIT {1 if feats['has_physts_init'] else 0}\n\n"
         "#endif /* __RTW89_MON_AUTOCONF_H__ */\n"
     )
     (rtw89_dir / "rtw89_mon_autoconf.h").write_text(autoconf, encoding="utf-8", newline="\n")
@@ -979,7 +1134,7 @@ def apply_tree(rtw89_dir: Path) -> dict:
     print("[APPLY] Copied rtw89_mon.h, rtw89_mon.c, rtw89_mon_autoconf.h")
 
     if changed_core_h:
-        print("[APPLY] core.h: updated RCU / TX descriptor annotations")
+        print("[APPLY] core.h: updated RCU / TX descriptor / RX radiotap annotations")
     if patch_makefile(makefile):
         print(f"[APPLY] Patched {makefile.name} (+= rtw89_mon.o)")
     for n in core_notes:
@@ -990,6 +1145,12 @@ def apply_tree(rtw89_dir: Path) -> dict:
         print(f"[APPLY] mac.c: {n}")
     for n in mac_be_notes:
         print(f"[APPLY] mac_be.c: {n}")
+    for n in pci_notes:
+        print(f"[APPLY] pci.c: {n}")
+    for n in mac_h_notes:
+        print(f"[APPLY] mac.h: {n}")
+    for n in phy_notes:
+        print(f"[APPLY] phy.c: {n}")
     for n in fw_notes:
         print(f"[APPLY] fw.c: {n}")
 

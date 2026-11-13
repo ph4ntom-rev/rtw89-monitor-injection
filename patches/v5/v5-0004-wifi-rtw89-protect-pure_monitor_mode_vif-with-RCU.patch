@@ -1,4 +1,4 @@
-From 459d78300df0f2eb74f595fb2593899c9f755294 Mon Sep 17 00:00:00 2001
+From c17e5b98097f78b25f156cb1061d1ffa2a66436a Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:04:00 +0500
 Subject: [PATCH v5 04/10] wifi: rtw89: protect pure_monitor_mode_vif with RCU
@@ -24,11 +24,11 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---
  drivers/net/wireless/realtek/rtw89/core.c     |  9 +++-
  drivers/net/wireless/realtek/rtw89/core.h     |  2 +-
- drivers/net/wireless/realtek/rtw89/mac80211.c | 47 +++++++++++++++++--
- 3 files changed, 51 insertions(+), 7 deletions(-)
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 49 +++++++++++++++++--
+ 3 files changed, 53 insertions(+), 7 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index f103f75c8..0744c3126 100644
+index f103f75..0744c31 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -530,7 +530,7 @@ void rtw89_chip_rfk_channel(struct rtw89_dev *rtwdev,
@@ -56,10 +56,10 @@ index f103f75c8..0744c3126 100644
  	if (!rtwvif)
  		return;
 diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
-index 0d893b992..d7f30394c 100644
+index 5014f89..c7e6ee2 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.h
 +++ b/drivers/net/wireless/realtek/rtw89/core.h
-@@ -7813,7 +7813,7 @@ struct rtw89_dev {
+@@ -7814,7 +7814,7 @@ struct rtw89_dev {
  	int napi_budget_countdown;
  
  	struct rtw89_debugfs *debugfs;
@@ -69,15 +69,15 @@ index 0d893b992..d7f30394c 100644
  
  	/* HCI related data, keep last */
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index e32c2db2d..ab061720d 100644
+index 5949a7c..e67cb2f 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
-@@ -173,6 +173,45 @@ static void __rtw89_ops_remove_iface_link(struct rtw89_dev *rtwdev,
+@@ -173,6 +173,47 @@ static void __rtw89_ops_remove_iface_link(struct rtw89_dev *rtwdev,
  	rtw89_mac_remove_vif(rtwdev, rtwvif_link);
  }
  
-+static void rtw89_set_pure_monitor_vif(struct rtw89_dev *rtwdev,
-+				       struct rtw89_vif *rtwvif)
++static bool rtw89_set_pure_monitor_vif(struct rtw89_dev *rtwdev,
++				       struct rtw89_vif *rtwvif, bool sync)
 +{
 +	struct wiphy *wiphy = rtwdev->hw->wiphy;
 +	struct rtw89_vif *old;
@@ -87,17 +87,19 @@ index e32c2db2d..ab061720d 100644
 +	old = rcu_dereference_protected(rtwdev->pure_monitor_mode_vif,
 +					lockdep_is_held(&wiphy->mtx));
 +	if (old == rtwvif)
-+		return;
++		return false;
 +
 +	rcu_assign_pointer(rtwdev->pure_monitor_mode_vif, rtwvif);
 +
 +	/* wait for lockless readers still using the previous vif */
-+	if (old)
++	if (old && sync)
 +		synchronize_rcu();
++
++	return !!old;
 +}
 +
-+static void rtw89_recalc_pure_monitor_vif(struct rtw89_dev *rtwdev,
-+					  struct rtw89_vif *exclude)
++static bool rtw89_recalc_pure_monitor_vif(struct rtw89_dev *rtwdev,
++					  struct rtw89_vif *exclude, bool sync)
 +{
 +	struct rtw89_vif *sole = NULL;
 +	struct rtw89_vif *iter;
@@ -112,33 +114,33 @@ index e32c2db2d..ab061720d 100644
 +		sole = iter;
 +	}
 +
-+	rtw89_set_pure_monitor_vif(rtwdev, sole);
++	return rtw89_set_pure_monitor_vif(rtwdev, sole, sync);
 +}
 +
  static int rtw89_ops_add_interface(struct ieee80211_hw *hw,
  				   struct ieee80211_vif *vif)
  {
-@@ -231,8 +270,7 @@ static int rtw89_ops_add_interface(struct ieee80211_hw *hw,
+@@ -231,8 +272,7 @@ static int rtw89_ops_add_interface(struct ieee80211_hw *hw,
  	if (ret)
  		goto unset_link;
  
 -	rtwdev->pure_monitor_mode_vif = vif->type == NL80211_IFTYPE_MONITOR ?
 -					rtwvif : NULL;
-+	rtw89_recalc_pure_monitor_vif(rtwdev, NULL);
++	rtw89_recalc_pure_monitor_vif(rtwdev, NULL, true);
  	rtw89_recalc_lps(rtwdev);
  	return 0;
  
-@@ -261,6 +299,9 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+@@ -261,6 +301,9 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
  	rtw89_debug(rtwdev, RTW89_DBG_STATE, "remove vif %pM type %d p2p %d\n",
  		    vif->addr, vif->type, vif->p2p);
  
 +	/* unpublish before tearing down the link, port and MAC ID */
-+	rtw89_recalc_pure_monitor_vif(rtwdev, rtwvif);
++	rtw89_recalc_pure_monitor_vif(rtwdev, rtwvif, true);
 +
  	wiphy_delayed_work_cancel(hw->wiphy, &rtwvif->roc.roc_work);
  
  	rtwvif_link = rtwvif->links[RTW89_VIF_IDLE_LINK_ID];
-@@ -280,8 +321,6 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+@@ -280,8 +323,6 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
  	rtw89_core_release_bit_map(rtwdev->hw_port, port);
  	rtw89_release_mac_id(rtwdev, macid);
  

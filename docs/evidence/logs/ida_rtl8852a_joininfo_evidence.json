@@ -1,0 +1,49 @@
+{
+    "tool":  "ida-bridge 6.3.0 (IDA Pro 9.5 + Hex-Rays mipsl)",
+    "firmware":  {
+                     "chip":  "RTL8852AE (10ec:8852)",
+                     "firmware_version":  "0.13.36.2",
+                     "section":  "sec_0_EMEM_0xb8970000.bin",
+                     "processor":  "mipsl (MIPS32 / MIPS16e)",
+                     "md5":  "3adc20e2bf2f65cd384ae7902313564e",
+                     "sha256":  "b6395e7111f056928644c4b0d62f0e76ed0f9fe25cbaa9e9ec76a56352bcb013",
+                     "crc32":  "0xb8a1e973"
+                 },
+    "functions":  {
+                      "H2C_FUNC_MAC_JOININFO_Handler":  {
+                                                            "ea":  "0xb89949c0",
+                                                            "symbol_alias":  "sub_B89949C0",
+                                                            "summary":  "Parses H2C JOININFO payload (a1 + 8). Checks self_role bits [7:6] at a1[11] (0x40 == RTW89_SELF_ROLE_AP) and op bit 0 at a1[9] (1 == disconnect). When self_role == RTW89_SELF_ROLE_AP, both connect and disconnect run CCTL_ResetByMacid(a1[8]) + HAL8852A_Role_Connect(a1 + 8) without invoking HAL8852A_Role_Disconnect.",
+                                                            "disasm_branch":  [
+                                                                                  "0xb8994a1c: 4BA1      lbu   $v0, 0xB($s1)       ; a1[11] = payload[3] (self_role \u003c\u003c 6)",
+                                                                                  "0xb8994a1e: 406B      li    $v1, 0x40",
+                                                                                  "0xb8994a20: 6BEB      neg   $v1, $v1            ; mask 0xC0",
+                                                                                  "0xb8994a22: 4CEB      and   $v1, $v0",
+                                                                                  "0xb8994a2c: 4072      cmpi  $v0, 0x40           ; RTW89_SELF_ROLE_AP (1 \u003c\u003c 6)",
+                                                                                  "0xb8994a30: 0460      bteqz loc_B8994A3A        ; AP -\u003e CCTL_ResetByMacid + Role_Connect",
+                                                                                  "0xb8994a32: 49A1      lbu   $v0, 9($s1)         ; a1[9] = payload[1] (op bit 0)",
+                                                                                  "0xb8994a38: 162A      bnez  $v0, loc_B8994A66   ; non-AP disconnect -\u003e Role_Disconnect",
+                                                                                  "0xb8994a3a: D1186BF7  jal   sub_B89BDDAC        ; CCTL_ResetByMacid(macid)",
+                                                                                  "0xb8994a3e: 88A1      lbu   $a0, 8($s1)         ; delay slot: macid = a1[8]",
+                                                                                  "0xb8994a40: B1181EF7  jal   sub_B897DC78        ; HAL8852A_Role_Connect(a1 + 8)",
+                                                                                  "0xb8994a66: B1187BF7  jal   sub_B897DDEC        ; HAL8852A_Role_Disconnect(a1 + 8)"
+                                                                              ],
+                                                            "pseudocode":  "int __fastcall H2C_FUNC_MAC_JOININFO_Handler(unsigned __int8 *a1)\n{\n  unsigned __int8 *payload = a1 + 8;\n  int ok;\n  ...\n  if ( (a1[11] \u0026 0xC0) != 0x40 \u0026\u0026 (a1[9] \u0026 1) != 0 )\n  {\n    ok = HAL8852A_Role_Disconnect(payload);\n  }\n  else\n  {\n    CCTL_ResetByMacid(a1[8]);\n    ok = HAL8852A_Role_Connect(payload);\n  }\n  if ( !ok )\n    return 4;\n  sub_B89B34D8(1, 1000, 5000);\n  return 0;\n}"
+                                                        },
+                      "HAL8852A_Role_Connect":  {
+                                                    "ea":  "0xb897dc78",
+                                                    "symbol_alias":  "sub_B897DC78",
+                                                    "summary":  "Allocates/updates firmware role slot (\u003c 8) for macid (*a1) and net_type ((a1[3] \u003e\u003e 2) \u0026 0xF). Only sets the client active role bitmask (*(_BYTE *)(v4 + 1) |= 1 \u003c\u003c slot) when (a1[3] \u0026 0xC0) == 0 (RTW89_SELF_ROLE_CLIENT)."
+                                                },
+                      "HAL8852A_Role_Disconnect":  {
+                                                       "ea":  "0xb897ddec",
+                                                       "symbol_alias":  "sub_B897DDEC",
+                                                       "summary":  "Looks up existing role slot for macid (*a1). Clears client active role bitmask without calling CCTL_ResetByMacid(macid); returns error 4 if slot == 0xFF."
+                                                   },
+                      "CCTL_ResetByMacid":  {
+                                                "ea":  "0xb89bddac",
+                                                "symbol_alias":  "sub_B89BDDAC",
+                                                "pseudocode":  "int __fastcall CCTL_ResetByMacid(int macid) { *(_DWORD *)(32 * macid + MEMORY[0xB8E12BCC]) |= MEMORY[0xB8E132A4]; return 1; }"
+                                            }
+                  }
+}

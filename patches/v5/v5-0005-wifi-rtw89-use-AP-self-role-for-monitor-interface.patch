@@ -1,4 +1,4 @@
-From ae13dce44ead767d51890e930cd5dac472db70cc Mon Sep 17 00:00:00 2001
+From d3d93012900156a84fb2c1bf8bda006e619b8e28 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:05:00 +0500
 Subject: [PATCH v5 05/10] wifi: rtw89: use AP self role for monitor interfaces
@@ -30,7 +30,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 2 insertions(+)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index 0744c3126..e82285a3f 100644
+index 0744c31..e82285a 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -5744,6 +5744,8 @@ void rtw89_vif_type_mapping(struct rtw89_vif_link *rtwvif_link, bool assoc)

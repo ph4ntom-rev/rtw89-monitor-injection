@@ -1,11 +1,12 @@
-From 90e0ba0ae8ff959dbd33fd090ede10cc01e49afb Mon Sep 17 00:00:00 2001
+From e8009af384604469d75c2cefd0aefce18d6aedb1 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:03:00 +0500
 Subject: [PATCH v5 03/10] wifi: rtw89: fix RX filter configuration for monitor
  mode
 
-When entering monitor mode, rtw89_ops_configure_filter() sets
-B_AX_SNIFFER_MODE in hal.rx_fltr, but leaves hardware target-address,
+When entering monitor mode or enabling FIF_OTHER_BSS,
+rtw89_ops_configure_filter() updates B_AX_SNIFFER_MODE or clears
+B_AX_A_A1_MATCH in hal.rx_fltr, but leaves hardware target-address,
 multicast, address CAM, beacon check, and UID drop masks active unless
 specific FIF_* flags happen to toggle:
 
@@ -19,36 +20,52 @@ specific FIF_* flags happen to toggle:
   DEFAULT_BE_RX_FLTR via mac->default_rx_fltr and is never cleared by
   any FIF_* flag.
 - B_AX_A_A1_MATCH, B_AX_A_BC, and B_AX_A_BCN_CHK_EN must stay cleared
-  whenever B_AX_SNIFFER_MODE is active, including after
-  rtw89_hw_scan_complete_cb(), rtw89_roc_end(), or MAC reinit writes
-  rtwdev->hal.rx_fltr back to R_AX_RX_FLTR_OPT / R_BE_RX_FLTR_OPT.
+  whenever B_AX_SNIFFER_MODE or FIF_OTHER_BSS is active, including
+  after rtw89_hw_scan_complete_cb(), rtw89_roc_end(), or MAC reinit
+  writes rtwdev->hal.rx_fltr back to R_AX_RX_FLTR_OPT /
+  R_BE_RX_FLTR_OPT.
 - FIF_CONTROL and FIF_PSPOLL are masked out of *new_flags even though
   rx_fltr_init_ax() and rx_fltr_init_be() already forward control
   frames to the host via R_AX_CTRL_FLTR / R_BE_CTRL_FLTR.
 
-Retain FIF_CONTROL and FIF_PSPOLL in *new_flags, and add
-rtw89_mac_refine_rx_fltr() to clear the target-address, CAM, beacon,
-and UID drop bits whenever B_AX_SNIFFER_MODE is set without mutating
-the baseline rtwdev->hal.rx_fltr value across mode transitions. The
-bit positions in R_AX_RX_FLTR_OPT and R_BE_RX_FLTR_OPT are identical.
+Retain FIF_CONTROL and FIF_PSPOLL in *new_flags, record FIF_OTHER_BSS
+in hal.rx_fltr_other_bss so active monitor interfaces with
+MONITOR_FLAG_OTHER_BSS (and concurrent passive monitors) receive
+arbitrary-BSS frames without setting B_AX_SNIFFER_MODE, and add
+rtw89_mac_refine_rx_fltr() to clear the drop masks without mutating
+baseline rtwdev->hal.rx_fltr across mode transitions. The bit positions
+in R_AX_RX_FLTR_OPT and R_BE_RX_FLTR_OPT are identical.
 
 Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
 ---
+ drivers/net/wireless/realtek/rtw89/core.h     |  1 +
  drivers/net/wireless/realtek/rtw89/mac.c      |  3 ++-
- drivers/net/wireless/realtek/rtw89/mac.h      | 15 +++++++++++++++
- drivers/net/wireless/realtek/rtw89/mac80211.c |  3 ++-
- drivers/net/wireless/realtek/rtw89/mac_be.c   |  2 +-
- 4 files changed, 20 insertions(+), 3 deletions(-)
+ drivers/net/wireless/realtek/rtw89/mac.h      | 16 ++++++++++++++++
+ drivers/net/wireless/realtek/rtw89/mac80211.c |  5 ++++-
+ drivers/net/wireless/realtek/rtw89/mac_be.c   |  3 ++-
+ 5 files changed, 25 insertions(+), 3 deletions(-)
 
+diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
+index 0d893b9..5014f89 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.h
++++ b/drivers/net/wireless/realtek/rtw89/core.h
+@@ -6496,6 +6496,7 @@ struct rtw89_hal {
+ 	u8 cv;
+ 	u8 cid; /* enum rtw89_core_chip_cid */
+ 	u8 acv;
++	bool rx_fltr_other_bss;
+ 	u16 aid; /* enum rtw89_core_chip_aid */
+ 	u32 antenna_tx;
+ 	u32 antenna_rx;
 diff --git a/drivers/net/wireless/realtek/rtw89/mac.c b/drivers/net/wireless/realtek/rtw89/mac.c
-index de8598ba4..470d9e353 100644
+index de8598b..73ada8b 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac.c
 @@ -2681,6 +2681,7 @@ void rtw89_mac_set_rx_fltr(struct rtw89_dev *rtwdev, u8 mac_idx, u32 rx_fltr)
  	u32 reg;
  	u32 val;
  
-+	rx_fltr = rtw89_mac_refine_rx_fltr(rx_fltr);
++	rx_fltr = rtw89_mac_refine_rx_fltr(rtwdev, rx_fltr);
  	reg = rtw89_mac_reg_by_idx(rtwdev, mac->rx_fltr, mac_idx);
  
  	val = rtw89_read32(rtwdev, reg);
@@ -57,21 +74,22 @@ index de8598ba4..470d9e353 100644
  			return ret;
  	}
 -	mac_ftlr = rtwdev->hal.rx_fltr;
-+	mac_ftlr = rtw89_mac_refine_rx_fltr(rtwdev->hal.rx_fltr);
++	mac_ftlr = rtw89_mac_refine_rx_fltr(rtwdev, rtwdev->hal.rx_fltr);
  	plcp_ftlr = B_AX_CCK_CRC_CHK | B_AX_CCK_SIG_CHK |
  		    B_AX_LSIG_PARITY_CHK_EN | B_AX_SIGA_CRC_CHK |
  		    B_AX_VHT_SU_SIGB_CRC_CHK | B_AX_VHT_MU_SIGB_CRC_CHK |
 diff --git a/drivers/net/wireless/realtek/rtw89/mac.h b/drivers/net/wireless/realtek/rtw89/mac.h
-index 8419bcd39..99844b012 100644
+index 8419bcd..ffd8c8a 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac.h
 +++ b/drivers/net/wireless/realtek/rtw89/mac.h
-@@ -1493,6 +1493,21 @@ void rtw89_mac_set_edcca_mode_bands(struct rtw89_dev *rtwdev, bool normal)
+@@ -1493,6 +1493,22 @@ void rtw89_mac_set_edcca_mode_bands(struct rtw89_dev *rtwdev, bool normal)
  	rtw89_mac_set_edcca_mode(rtwdev, RTW89_MAC_1, normal);
  }
  
-+static inline u32 rtw89_mac_refine_rx_fltr(u32 rx_fltr)
++static inline u32 rtw89_mac_refine_rx_fltr(struct rtw89_dev *rtwdev,
++					   u32 rx_fltr)
 +{
-+	if (rx_fltr & B_AX_SNIFFER_MODE)
++	if ((rx_fltr & B_AX_SNIFFER_MODE) || rtwdev->hal.rx_fltr_other_bss)
 +		rx_fltr &= ~(B_AX_A_A1_MATCH |
 +			     B_AX_A_BC |
 +			     B_AX_A_MC |
@@ -88,29 +106,32 @@ index 8419bcd39..99844b012 100644
  void rtw89_mac_update_rts_threshold(struct rtw89_dev *rtwdev);
  void rtw89_mac_flush_txq(struct rtw89_dev *rtwdev, u32 queues, bool drop);
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index 87f537760..e32c2db2d 100644
+index 87f5377..5949a7c 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
-@@ -325,7 +325,8 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
+@@ -325,7 +325,10 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
  	rtw89_leave_ps_mode(rtwdev);
  
  	*new_flags &= FIF_ALLMULTI | FIF_OTHER_BSS | FIF_FCSFAIL |
 -		      FIF_BCN_PRBRESP_PROMISC | FIF_PROBE_REQ;
 +		      FIF_BCN_PRBRESP_PROMISC | FIF_PROBE_REQ |
 +		      FIF_CONTROL | FIF_PSPOLL;
++
++	rtwdev->hal.rx_fltr_other_bss = !!(*new_flags & FIF_OTHER_BSS);
  
  	if (changed_flags & FIF_ALLMULTI) {
  		if (*new_flags & FIF_ALLMULTI)
 diff --git a/drivers/net/wireless/realtek/rtw89/mac_be.c b/drivers/net/wireless/realtek/rtw89/mac_be.c
-index fa35cafd7..e68431b6e 100644
+index fa35caf..7147679 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac_be.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac_be.c
-@@ -1328,7 +1328,7 @@ static int rx_fltr_init_be(struct rtw89_dev *rtwdev, u8 mac_idx)
+@@ -1328,7 +1328,8 @@ static int rx_fltr_init_be(struct rtw89_dev *rtwdev, u8 mac_idx)
  	rtw89_mac_typ_fltr_opt_be(rtwdev, RTW89_DATA, RTW89_FWD_TO_HOST, mac_idx);
  
  	reg = rtw89_mac_reg_by_idx(rtwdev, R_BE_RX_FLTR_OPT, mac_idx);
 -	rtw89_write32(rtwdev, reg, rtwdev->hal.rx_fltr);
-+	rtw89_write32(rtwdev, reg, rtw89_mac_refine_rx_fltr(rtwdev->hal.rx_fltr));
++	rtw89_write32(rtwdev, reg,
++		      rtw89_mac_refine_rx_fltr(rtwdev, rtwdev->hal.rx_fltr));
  
  	reg = rtw89_mac_reg_by_idx(rtwdev, R_BE_PLCP_HDR_FLTR, mac_idx);
  	val = B_BE_HE_SIGB_CRC_CHK | B_BE_VHT_MU_SIGB_CRC_CHK |

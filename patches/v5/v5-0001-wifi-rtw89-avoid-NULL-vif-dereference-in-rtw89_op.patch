@@ -1,4 +1,4 @@
-From 91bdd4b0209353284c2be0e6cc4c209e583ee33a Mon Sep 17 00:00:00 2001
+From c4c39b05b4e0b4cfa5acd7de1c5dcec7e0d91175 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:01:00 +0500
 Subject: [PATCH v5 01/10] wifi: rtw89: avoid NULL vif dereference in
@@ -27,7 +27,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index 9e6cafc49..87f537760 100644
+index 9e6cafc..87f5377 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
 @@ -23,11 +23,18 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,

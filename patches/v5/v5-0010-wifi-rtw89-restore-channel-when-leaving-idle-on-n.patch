@@ -1,0 +1,63 @@
+From d869f75383a1aaf376ba2afdad3d67f587a2dc23 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Tue, 10 Nov 2026 18:10:00 +0500
+Subject: [PATCH v5 10/10] wifi: rtw89: restore channel when leaving idle on
+ non-chanctx devices
+
+rtw89_alloc_ieee80211_hw() disables native chanctx callbacks
+(ops->assign_vif_chanctx = NULL) and relies on mac80211 chanctx
+emulation via hw->conf.chandef and rtw89_ops_config() whenever
+chip->support_chanctx_num == 0 or the loaded firmware lacks
+SCAN_OFFLOAD or BEACON_FILTER (for example on RTL8852AE with firmware
+0.13.36.2, where support_chanctx_num == 1 but BEACON_FILTER is absent).
+
+When the last monitor interface is brought down or deleted (or all
+interfaces become idle), rtw89_ops_stop() / rtw89_enter_ips() powers
+down the MAC/BB/RF and clears the RTW89_PHY_0 entity state while
+mac80211 retains local->hw.conf.chandef. When a monitor interface
+(including a concurrent MONITOR_FLAG_ACTIVE interface alongside an
+unassociated STA, where __ieee80211_recalc_idle() clears
+IEEE80211_CONF_IDLE without setting IEEE80211_CONF_MONITOR) is brought
+up on the same channel, rtw89_ops_start() sets RTW89_FLAG_POWERON
+without programming the channel (so rtw89_leave_ips() returns early),
+and ieee80211_hw_conf_chan() omits IEEE80211_CONF_CHANGE_CHANNEL
+because chandef is unchanged, leaving RX/TX silent until a manual
+channel change.
+
+In rtw89_ops_config(), when IEEE80211_CONF_CHANGE_IDLE or
+IEEE80211_CONF_CHANGE_MONITOR leaves the device non-idle on hardware
+without assign_vif_chanctx and RTW89_PHY_0 is not yet active, apply
+hw->conf.chandef and call rtw89_set_channel(). When
+IEEE80211_CONF_CHANGE_CHANNEL has already configured RTW89_PHY_0, the
+entity state check avoids redundant RF calibration.
+
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index c2b3761..a062588 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -142,6 +142,17 @@ static int rtw89_ops_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
+ 	if (changed & IEEE80211_CONF_CHANGE_MONITOR)
+ 		rtw89_physts_parsing_init(rtwdev);
+ 
++	if ((changed & (IEEE80211_CONF_CHANGE_IDLE |
++			IEEE80211_CONF_CHANGE_MONITOR)) &&
++	    !(hw->conf.flags & IEEE80211_CONF_IDLE) &&
++	    !rtwdev->ops->assign_vif_chanctx &&
++	    !rtw89_get_entity_state(rtwdev, RTW89_PHY_0) &&
++	    cfg80211_chandef_valid(&hw->conf.chandef)) {
++		rtw89_config_entity_chandef(rtwdev, RTW89_CHANCTX_0,
++					    &hw->conf.chandef);
++		rtw89_set_channel(rtwdev);
++	}
++
+ 	return 0;
+ }
+ 
+-- 
+2.56.0.windows.4
+

@@ -1,0 +1,75 @@
+=== rtw89 Upstream Submission Preflight (Read-Only, No Mail Sent) ===
+  Series directory : <repo>/patches/v5
+[PASS] Found cover letter + 10 numbered patches
+[PASS] Metadata, trailers, Fixes/stable tags, and LF line endings verified
+[INFO] Running checkpatch.pl --strict against 10 patches...
+---------------------------------------------------------------------------------------------------------------------------------------------
+<repo>/patches/v5/v5-0001-wifi-rtw89-avoid-NULL-vif-dereference-in-rtw89_op.patch
+---------------------------------------------------------------------------------------------------------------------------------------------
+total: 0 errors, 0 warnings, 0 checks, 19 lines checked
+
+<repo>/patches/v5/v5-0001-wifi-rtw89-avoid-NULL-vif-dereference-in-rtw89_op.patch has no obvious style problems and is ready for submission.
+---------------------------------------------------------------------------------------------------------------------------------------------
+<repo>/patches/v5/v5-0002-wifi-rtw89-handle-negative-rate-index-for-injecte.patch
+---------------------------------------------------------------------------------------------------------------------------------------------
+total: 0 errors, 0 warnings, 0 checks, 26 lines checked
+
+<repo>/patches/v5/v5-0002-wifi-rtw89-handle-negative-rate-index-for-injecte.patch has no obvious style problems and is ready for submission.
+---------------------------------------------------------------------------------------------------------------------------------------------
+<repo>/patches/v5/v5-0003-wifi-rtw89-fix-RX-filter-configuration-for-monito.patch
+---------------------------------------------------------------------------------------------------------------------------------------------
+total: 0 errors, 0 warnings, 0 checks, 64 lines checked
+
+<repo>/patches/v5/v5-0003-wifi-rtw89-fix-RX-filter-configuration-for-monito.patch has no obvious style problems and is ready for submission.
+---------------------------------------------------------------------------------------------------------------------------------------------
+<repo>/patches/v5/v5-0004-wifi-rtw89-protect-pure_monitor_mode_vif-with-RCU.patch
+---------------------------------------------------------------------------------------------------------------------------------------------
+total: 0 errors, 0 warnings, 0 checks, 103 lines checked
+
+<repo>/patches/v5/v5-0004-wifi-rtw89-protect-pure_monitor_mode_vif-with-RCU.patch has no obvious style problems and is ready for submission.
+---------------------------------------------------------------------------------------------------------------------------------------------
+<repo>/patches/v5/v5-0005-wifi-rtw89-use-AP-self-role-for-monitor-interface.patch
+---------------------------------------------------------------------------------------------------------------------------------------------
+total: 0 errors, 0 warnings, 0 checks, 8 lines checked
+
+<repo>/patches/v5/v5-0005-wifi-rtw89-use-AP-self-role-for-monitor-interface.patch has no obvious style problems and is ready for submission.
+---------------------------------------------------------------------------------------------------------------------------------------------
+<repo>/patches/v5/v5-0006-wifi-rtw89-transmit-frames-from-monitor-interface.patch
+---------------------------------------------------------------------------------------------------------------------------------------------
+total: 0 errors, 0 warnings, 0 checks, 229 lines checked
+
+<repo>/patches/v5/v5-0006-wifi-rtw89-transmit-frames-from-monitor-interface.patch has no obvious style problems and is ready for submission.
+---------------------------------------------------------------------------------------------------------------------------------------------
+<repo>/patches/v5/v5-0007-wifi-rtw89-send-injected-control-frames-through-t.patch
+---------------------------------------------------------------------------------------------------------------------------------------------
+total: 0 errors, 0 warnings, 0 checks, 40 lines checked
+
+<repo>/patches/v5/v5-0007-wifi-rtw89-send-injected-control-frames-through-t.patch has no obvious style problems and is ready for submission.
+---------------------------------------------------------------------------------------------------------------------------------------------
+<repo>/patches/v5/v5-0008-wifi-rtw89-skip-host-side-TX-hooks-for-injected-f.patch
+---------------------------------------------------------------------------------------------------------------------------------------------
+total: 0 errors, 0 warnings, 0 checks, 35 lines checked
+
+<repo>/patches/v5/v5-0008-wifi-rtw89-skip-host-side-TX-hooks-for-injected-f.patch has no obvious style problems and is ready for submission.
+---------------------------------------------------------------------------------------------------------------------------------------------
+<repo>/patches/v5/v5-0009-wifi-rtw89-honor-ASSIGN_SEQ-retries-and-NO_ACK-fo.patch
+---------------------------------------------------------------------------------------------------------------------------------------------
+total: 0 errors, 0 warnings, 0 checks, 148 lines checked
+
+<repo>/patches/v5/v5-0009-wifi-rtw89-honor-ASSIGN_SEQ-retries-and-NO_ACK-fo.patch has no obvious style problems and is ready for submission.
+---------------------------------------------------------------------------------------------------------------------------------------------
+<repo>/patches/v5/v5-0010-wifi-rtw89-restore-channel-when-leaving-idle-on-n.patch
+---------------------------------------------------------------------------------------------------------------------------------------------
+total: 0 errors, 0 warnings, 0 checks, 17 lines checked
+
+<repo>/patches/v5/v5-0010-wifi-rtw89-restore-channel-when-leaving-idle-on-n.patch has no obvious style problems and is ready for submission.
+
+NOTE: Ignored message types: UNKNOWN_COMMIT_ID
+[PASS] checkpatch.pl --strict passed with 0 errors / 0 warnings / 0 checks
+
+[READY] Series validated locally. No email was sent.
+When ready for manual dry-run inspection in the future, run:
+  git send-email --dry-run \
+    --to="Ping-Ke Shih <pkshih@realtek.com>" \
+    --cc="linux-wireless@vger.kernel.org" \
+    <repo>/patches/v5/v5-*.patch

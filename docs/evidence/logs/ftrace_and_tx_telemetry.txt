@@ -1,0 +1,28 @@
+# RTW89 v5 Live Kernel Telemetry (RTL8852AE [10ec:8852], Linux 7.1.5+kali-amd64)
+# Synthetic locally-administered MACs only: 02:00:00:88:52:01 -> 02:00:00:88:52:02 (EtherType 0x88B5)
+
+=== [A1] Standalone Passive Monitor: down -> up Channel Restore (IEEE80211_CONF_CHANGE_IDLE) ===
+  Interface mon0
+  type monitor
+  channel 40 (5200 MHz), width: 20 MHz (no HT), center1: 5200 MHz
+  --- tracefs function_graph + rtw89_mon_refine_rx_fltr kretprobe ---
+   11)               |  /* rxfltr: (cmac_init_ax+0x277/0x16f0 [rtw89_core] <- rtw89_mon_refine_rx_fltr) fltr=0x4401 */
+   11)               |  /* rxfltr: (rtw89_mac_set_rx_fltr+0x27/0x90 [rtw89_core] <- rtw89_mon_refine_rx_fltr) fltr=0x4401 */
+   11)               |  rtw89_ops_config [rtw89_core]() {
+   11)               |    rtw89_mon_config_channel [rtw89_core]() {
+   11) * 53765.22 us |      rtw89_set_channel [rtw89_core]();
+    4)               |  /* rxfltr: (rtw89_mac_set_rx_fltr+0x27/0x90 [rtw89_core] <- rtw89_mon_refine_rx_fltr) fltr=0x4401 */
+
+=== [A2] Concurrent Passive mon0 + Managed wlan0 UP (Safety Guard) ===
+  Injected 10 frames on passive mon0 while wlan0 UP:
+  rtw89_mon_resolve_tx_vif -> NULL count : 10/10
+  rtw89_pci_ops_tx_write DMA submissions : 0/10 (0 hardware ring touches, 0 kernel warnings)
+
+=== [A3] Concurrent Active Monitor (MONITOR_FLAG_ACTIVE | FIF_OTHER_BSS) + wlan0 UP ===
+  Interface: mon0act (type monitor, flags: active, otherbss, addr 02:00:00:88:52:10) + wlan0 UP
+  R_AX_RX_FLTR_OPT (0xCE20) values       : 0x30044be, 0x4400 (bit0 B_AX_SNIFFER_MODE=0 -> HW Auto-ACK preserved!)
+  rtw89_mon_resolve_tx_vif -> active vif : 30/30
+  [20x NO_ACK, SN=1337] TX desc programmed: 20/20 (no_ack=1, tx_cnt_lmt=1, hw_seq_mode=0 -> header SN kept)
+  [20x NO_ACK] mac80211 TX status report : 20/20 with IEEE80211_TX_STAT_NOACK_TRANSMITTED (0x80000000)
+  [10x DATA_RETRIES=2] TX desc programmed: 10/10 (no_ack=0, tx_cnt_lmt=3 via max_rate_tries=63)
+  [10x DATA_RETRIES=2] RPP & TX status   : 10/10 unacked retry-limit completions (total RPP=1 events: 30/30)

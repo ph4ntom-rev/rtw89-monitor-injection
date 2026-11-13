@@ -12,7 +12,7 @@
 
 ## 2. Static, preflight & CI checks for `v5`
 
-Validated locally against `v7.4-rc1` (`d48723711bae9b8cdc56719c448ba42fef28cbee`) via [`scripts/prepare_submission.sh`](../scripts/prepare_submission.sh) (log: [`prepare_submission_checkpatch.log`](evidence/logs/prepare_submission_checkpatch.log)) and continuously enforced by [GitHub Actions CI](../.github/workflows/ci.yml):
+Validated locally against `v7.4-rc1` (`d48723711bae9b8cdc56719c448ba42fef28cbee`) via [`scripts/prepare_submission.sh`](../scripts/prepare_submission.sh) (log: [`prepare_submission_checkpatch.txt`](evidence/logs/prepare_submission_checkpatch.txt)) and continuously enforced by [GitHub Actions CI](../.github/workflows/ci.yml):
 
 | Check | Result |
 | :--- | :--- |
@@ -21,7 +21,7 @@ Validated locally against `v7.4-rc1` (`d48723711bae9b8cdc56719c448ba42fef28cbee`
 | `make W=1 C=1` (`sparse` + `CONFIG_PROVE_LOCKING=y`) | `0` new compiler or sparse warnings across the series |
 | `checkpatch.pl --strict` (`prepare_submission.sh`) | `0 errors, 0 warnings, 0 checks` across `v5-0001`..`v5-0010` |
 | `patch_rtw89.py --apply` across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` | hooks apply cleanly without warnings; `--revert` restores trees byte-for-byte |
-| Out-of-tree Kbuild (`make W=1 C=1 modules`) on LTS `v6.6`, `v6.12` (Gen 1), `v6.18` (Gen 2), and `7.1.5+kali` | compiles all 18 AX/BE PCIe & USB `.ko` modules cleanly with `0` warnings ([`build_module_7.1.5.log`](evidence/logs/build_module_7.1.5.log)) |
+| Out-of-tree Kbuild (`make W=1 C=1 modules`) on LTS `v6.6`, `v6.12` (Gen 1), `v6.18` (Gen 2), and `7.1.5+kali` | compiles all 18 AX/BE PCIe & USB `.ko` modules cleanly with `0` warnings ([`build_module_7.1.5.txt`](evidence/logs/build_module_7.1.5.txt)) |
 | DKMS flow (`dkms_prepare.sh`, `dkms_pre_build.sh`) | handles stable, `-rc`, and cross-series `.config` lookup (`BUILD_EXCLUSIVE_KERNEL`), rejects mismatched series |
 
 ![Upstream Submission Preflight & checkpatch.pl --strict](evidence/screenshots/02_prepare_submission_checkpatch.png)
@@ -45,7 +45,7 @@ All firmware-facing assumptions in patches 3, 5, and 10 were verified statically
 - **Hardware:** Realtek RTL8852AE PCIe (`10ec:8852`)
 - **Firmware:** `rtw89/rtw8852a_fw-1.bin` `0.13.36.2` (`52acc807`, unmodified `linux-firmware`, SHA-256 `fdb5513cf7372440d7980a61aa4b753b192b056734a978458ae4a4ef7f4b2c1e`)
 - **Kernel:** Linux `7.1.5+kali-amd64` (`SMP PREEMPT_DYNAMIC x86_64`)
-- **Sanitized logs:** [`build_module_7.1.5.log`](evidence/logs/build_module_7.1.5.log), [`ftrace_and_tx_telemetry.log`](evidence/logs/ftrace_and_tx_telemetry.log), [`hardware_validation_report.json`](evidence/logs/hardware_validation_report.json), [`dmesg_stress_clean.log`](evidence/logs/dmesg_stress_clean.log)
+- **Sanitized logs:** [`build_module_7.1.5.txt`](evidence/logs/build_module_7.1.5.txt), [`ftrace_and_tx_telemetry.txt`](evidence/logs/ftrace_and_tx_telemetry.txt), [`hardware_validation_report.json`](evidence/logs/hardware_validation_report.json), [`dmesg_stress_clean.txt`](evidence/logs/dmesg_stress_clean.txt)
 
 | Check | `v5` result |
 | :--- | :--- |
@@ -56,7 +56,7 @@ All firmware-facing assumptions in patches 3, 5, and 10 were verified statically
 | Pre-stress promiscuous RX, 10 s on channel 40 (`5200 MHz`) | `PASS`: `1,752` frames with Radiotap (`264` beacons, `3` probe req, `6` probe resp, `147` BlockAck, `533` RTS, `523` CTS, `211` ACK, `21` QoS/Null data) |
 | 25 `iw dev mon0 del/add` RCU stress cycles with concurrent raw TX (Null / 10B ACK / 16B RTS) | `PASS`: `12,352` raw TX frames sent across `25/25` teardown cycles, `0` kernel alerts |
 | Post-stress promiscuous RX, 10 s on channel 40 (`5200 MHz`) | `PASS`: `733` frames with Radiotap (`262` beacons, `56` BlockAck, `161` RTS, `154` CTS, `63` ACK, `29` Data/Null data) |
-| `dmesg` (`BUG`, `WARNING`, `Oops`, `KASAN`, RCU stall, `rtw89` errors) | `PASS`: `0` new alerts ([`dmesg_stress_clean.log`](evidence/logs/dmesg_stress_clean.log)) |
+| `dmesg` (`BUG`, `WARNING`, `Oops`, `KASAN`, RCU stall, `rtw89` errors) | `PASS`: `0` new alerts ([`dmesg_stress_clean.txt`](evidence/logs/dmesg_stress_clean.txt)) |
 
 ![Live Kernel tracefs + kprobe Telemetry on RTL8852AE](evidence/screenshots/03_concurrent_active_monitor_noack.png)
 

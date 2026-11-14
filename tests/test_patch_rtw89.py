@@ -629,7 +629,12 @@ class PatchRtw89TestCase(unittest.TestCase):
         self.assertNotIn("*** SUBJECT HERE ***", cover)
         self.assertNotIn("*** BLURB HERE ***", cover)
         self.assertNotIn("TODO", cover)
-        self.assertIn("base-commit: d48723711bae9b8cdc56719c448ba42fef28cbee", cover)
+        self.assertIn("Subject: [PATCH rtw-next v5 00/10] wifi: rtw89:", cover)
+        self.assertIn("v1 (RFC): https://lore.kernel.org/linux-wireless/", cover)
+        self.assertIn("base-commit: 61a5eb87b2d9b4d5e353780b781cf691f39ba9e1", cover)
+
+        prep_sh = (REPO_ROOT / "scripts" / "prepare_submission.sh").read_text(encoding="utf-8")
+        self.assertIn("--suppress-cc=bodycc", prep_sh)
 
         def body(idx):
             return patches[idx].read_text(encoding="utf-8")
@@ -692,6 +697,7 @@ class PatchRtw89TestCase(unittest.TestCase):
             content = p.read_text(encoding="utf-8")
             self.assertTrue(content.startswith("From "), f"Missing mbox From line in {p.name}")
             self.assertIn("From: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
+            self.assertIn("Subject: [PATCH rtw-next v5 ", content)
             self.assertIn("Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
             self.assertNotIn("Fixes: d9204e99b696", content)
             self.assertNotIn("\r\n", content, f"CRLF line endings in {p.name}")

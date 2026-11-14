@@ -1,7 +1,7 @@
-From 86fad859b6918d6ac0f70900f502ae4f1352e6fd Mon Sep 17 00:00:00 2001
+From d869f75383a1aaf376ba2afdad3d67f587a2dc23 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
-Date: Wed, 11 Nov 2026 01:28:34 +0500
-Subject: [PATCH v5 00/10] wifi: rtw89: monitor mode RX filter and raw frame injection fixes
+Date: Sat, 14 Nov 2026 04:40:00 +0500
+Subject: [PATCH rtw-next v5 00/10] wifi: rtw89: monitor mode RX filter and raw frame injection fixes
 
 This series fixes a NULL pointer dereference and a negative rate index
 bug on the rtw89 TX path for injected frames, makes monitor mode
@@ -57,8 +57,8 @@ Verification:
   RTL8852AE firmware 0.13.36.2 (JoinInfo H2C role/CCTL handling,
   scan-offload RX filter pause/restore, and absence of BEACON_FILTER
   forcing no_chanctx even with support_chanctx_num == 1).
-- Each patch builds cleanly in isolation on Linux 7.4-rc1 with W=1,
-  C=1 (sparse), and CONFIG_PROVE_LOCKING=y, and passes
+- Each patch builds cleanly in isolation on rtw-next (Linux 7.4-rc1)
+  with W=1, C=1 (sparse), and CONFIG_PROVE_LOCKING=y, and passes
   checkpatch.pl --strict without warnings.
 - Runtime hardware validation was conducted on RTL8852AE (10ec:8852,
   firmware rtw89/rtw8852a_fw-1.bin 0.13.36.2, Linux 7.1.5): promiscuous
@@ -105,6 +105,8 @@ Changes in v3:
 
 v4: not sent to the list
 v3: https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/
+v2: https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/
+v1 (RFC): https://lore.kernel.org/linux-wireless/1a196d6dfbc.35537d221913104450.3720060455831933789@zoho.com/
 
 
 Enver Ikromov (10):
@@ -130,7 +132,7 @@ Enver Ikromov (10):
  8 files changed, 278 insertions(+), 43 deletions(-)
 
 
-base-commit: d48723711bae9b8cdc56719c448ba42fef28cbee
+base-commit: 61a5eb87b2d9b4d5e353780b781cf691f39ba9e1
 -- 
 2.56.0.windows.4
 

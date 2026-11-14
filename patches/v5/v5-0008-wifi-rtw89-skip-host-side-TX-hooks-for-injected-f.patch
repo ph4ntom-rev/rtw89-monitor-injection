@@ -1,8 +1,8 @@
-From c914d76274a3400c6633c2d648703824c928aa98 Mon Sep 17 00:00:00 2001
+From 777eeb84ee1a1da1d12be63f5e48605ab3437f96 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:08:00 +0500
-Subject: [PATCH v5 08/10] wifi: rtw89: skip host-side TX hooks for injected
- frames
+Subject: [PATCH rtw-next v5 08/10] wifi: rtw89: skip host-side TX hooks for
+ injected frames
 
 Several TX hooks assume frames that were built by the local network
 stack for an associated link:
@@ -27,7 +27,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 12 insertions(+), 5 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index c48277a..ebfcb16 100644
+index 7003c24..84c12c6 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -1351,9 +1351,11 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,

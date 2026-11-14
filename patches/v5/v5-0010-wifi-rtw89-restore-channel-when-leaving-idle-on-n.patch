@@ -1,8 +1,8 @@
-From d869f75383a1aaf376ba2afdad3d67f587a2dc23 Mon Sep 17 00:00:00 2001
+From 290ebe0669028ec7beca43f974e0998f93b2c1fb Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:10:00 +0500
-Subject: [PATCH v5 10/10] wifi: rtw89: restore channel when leaving idle on
- non-chanctx devices
+Subject: [PATCH rtw-next v5 10/10] wifi: rtw89: restore channel when leaving
+ idle on non-chanctx devices
 
 rtw89_alloc_ieee80211_hw() disables native chanctx callbacks
 (ops->assign_vif_chanctx = NULL) and relies on mac80211 chanctx
@@ -37,10 +37,10 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 11 insertions(+)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index c2b3761..a062588 100644
+index c8a6003..3649a7a 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
-@@ -142,6 +142,17 @@ static int rtw89_ops_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
+@@ -152,6 +152,17 @@ static int rtw89_ops_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
  	if (changed & IEEE80211_CONF_CHANGE_MONITOR)
  		rtw89_physts_parsing_init(rtwdev);
  

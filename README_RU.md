@@ -17,8 +17,8 @@ monitor-интерфейсе, и восстанавливают рабочий �
 
 | | |
 | :--- | :--- |
-| Текущая серия | [`patches/v5/`](patches/v5/), 10 патчей, база `torvalds/linux` [`d48723711bae`](https://github.com/torvalds/linux/commit/d48723711bae9b8cdc56719c448ba42fef28cbee) (окно слияния 7.4-rc1) |
-| Рассылка | v3 [отправлена](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/) 2026-11-05, ждёт ревью. v4 не отправлялась. v5 проверена (`scripts/prepare_submission.sh`) и подготовлена локально к будущей отправке после ревью v3. |
+| Текущая серия | [`patches/v5/`](patches/v5/), 10 патчей (`[PATCH rtw-next v5]`), база `pkshih/rtw.git` `rtw-next` [`61a5eb87b2d9`](https://github.com/pkshih/rtw/commit/61a5eb87b2d9b4d5e353780b781cf691f39ba9e1) (Linux 7.4-rc1) |
+| Рассылка | [`[PATCH rtw-next v5 00/10]`](https://lore.kernel.org/linux-wireless/20261113235211.1911-1-owner@ph4ntom-rev.uz/) отправлена в `linux-wireless` (2026-11-13); заменяет [v3](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/) (v4 не отправлялась). |
 | Сборка и статика | Каждый патч собирается отдельно; `W=1` и sparse (`C=1`) с `CONFIG_PROVE_LOCKING=y` дают `0` новых предупреждений; `checkpatch.pl --strict` — `0` ошибок/предупреждений; `patch_rtw89.py` проверяется на `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2) и `v7.4-rc1` с реальной Kbuild-сборкой `make W=1 C=1 modules` на LTS `v6.6`, `v6.12`, `v6.18` и `v7.4-rc1` в [CI](.github/workflows/ci.yml). |
 | Проверка на железе | **RTL8852AE** (`10ec:8852`, прошивка `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — верифицирована в IDA Pro 9.5 и протестирована вживую через `tracefs`/kprobes + `verify_hardware.py` (`PASS`), см. [отчёт и скриншоты](docs/PREFLIGHT_VALIDATION.md). |
 | Не проверено на железе | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB-адаптеры, DBCC. |

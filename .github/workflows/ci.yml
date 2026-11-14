@@ -9,8 +9,8 @@ on:
 env:
   # Opt into Node 24 runtime ahead of GitHub's Node 20 deprecation cutoff
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  # Upstream commit the patch series is generated against (v7.4-rc1 merge window)
-  KERNEL_BASE: d48723711bae9b8cdc56719c448ba42fef28cbee
+  # Upstream rtw-next commit (pkshih/rtw.git) the patch series is generated against
+  KERNEL_BASE: 61a5eb87b2d9b4d5e353780b781cf691f39ba9e1
 
 jobs:
   scripts:
@@ -93,10 +93,10 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential bc bison flex libelf-dev libssl-dev sparse
 
-      - name: Fetch upstream kernel at the series base
+      - name: Fetch upstream rtw-next kernel at the series base
         run: |
           git init -q linux
-          git -C linux fetch -q --depth 1 https://github.com/torvalds/linux.git "$KERNEL_BASE"
+          git -C linux fetch -q --depth 1 https://github.com/pkshih/rtw.git "$KERNEL_BASE"
           git -C linux checkout -q FETCH_HEAD
           git -C linux config user.name CI
           git -C linux config user.email ci@example.invalid

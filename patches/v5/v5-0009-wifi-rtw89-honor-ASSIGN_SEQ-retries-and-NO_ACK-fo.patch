@@ -1,8 +1,8 @@
-From 22928b3145fa54f8707b28eb5155bf8e57140ba2 Mon Sep 17 00:00:00 2001
+From 70b03b2fbeb14b30334fc413ce1af8c7ebf010ca Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:09:00 +0500
-Subject: [PATCH v5 09/10] wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK
- for injected frames
+Subject: [PATCH rtw-next v5 09/10] wifi: rtw89: honor ASSIGN_SEQ, retries, and
+ NO_ACK for injected frames
 
 For injected frames, rtw89_core_tx_update_injection() only applies
 the radiotap rate and leaves several TX descriptor and completion
@@ -50,7 +50,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  4 files changed, 58 insertions(+), 14 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index ebfcb16..b951c77 100644
+index 84c12c6..7d174d2 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -1252,12 +1252,43 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
@@ -167,7 +167,7 @@ index ebfcb16..b951c77 100644
  
  	return cpu_to_le32(dword);
  }
-@@ -7530,6 +7566,7 @@ static int rtw89_core_register_hw(struct rtw89_dev *rtwdev)
+@@ -7542,6 +7578,7 @@ static int rtw89_core_register_hw(struct rtw89_dev *rtwdev)
  	hw->queues = IEEE80211_NUM_ACS;
  	hw->max_rx_aggregation_subframes = chip->max_rx_agg_num;
  	hw->max_tx_aggregation_subframes = chip->max_tx_agg_num;
@@ -176,7 +176,7 @@ index ebfcb16..b951c77 100644
  
  	hw->radiotap_mcs_details |= IEEE80211_RADIOTAP_MCS_HAVE_FEC |
 diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
-index 4345b3e..803e3bb 100644
+index 7b03154..3754ab6 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.h
 +++ b/drivers/net/wireless/realtek/rtw89/core.h
 @@ -1278,6 +1278,7 @@ struct rtw89_tx_desc_info {
@@ -198,10 +198,10 @@ index 4345b3e..803e3bb 100644
  	bool sw_mld;
  };
 diff --git a/drivers/net/wireless/realtek/rtw89/mac.h b/drivers/net/wireless/realtek/rtw89/mac.h
-index ffd8c8a..8b47af2 100644
+index b4a7cb7..6870cc2 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac.h
 +++ b/drivers/net/wireless/realtek/rtw89/mac.h
-@@ -1887,6 +1887,8 @@ void rtw89_tx_rpt_tx_status(struct rtw89_dev *rtwdev, struct sk_buff *skb,
+@@ -1888,6 +1888,8 @@ void rtw89_tx_rpt_tx_status(struct rtw89_dev *rtwdev, struct sk_buff *skb,
  	info = IEEE80211_SKB_CB(skb);
  	ieee80211_tx_info_clear_status(info);
  
@@ -211,7 +211,7 @@ index ffd8c8a..8b47af2 100644
  		info->flags |= IEEE80211_TX_STAT_ACK;
  	else
 diff --git a/drivers/net/wireless/realtek/rtw89/pci.c b/drivers/net/wireless/realtek/rtw89/pci.c
-index ddb27c7..87e3a49 100644
+index 6d19e75..6c4d6c0 100644
 --- a/drivers/net/wireless/realtek/rtw89/pci.c
 +++ b/drivers/net/wireless/realtek/rtw89/pci.c
 @@ -475,7 +475,8 @@ static void rtw89_pci_tx_status(struct rtw89_dev *rtwdev,

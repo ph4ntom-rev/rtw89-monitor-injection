@@ -1,8 +1,8 @@
-From e8009af384604469d75c2cefd0aefce18d6aedb1 Mon Sep 17 00:00:00 2001
+From 2468b8dd16bcdeaf485897b50ab27584ee587207 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:03:00 +0500
-Subject: [PATCH v5 03/10] wifi: rtw89: fix RX filter configuration for monitor
- mode
+Subject: [PATCH rtw-next v5 03/10] wifi: rtw89: fix RX filter configuration
+ for monitor mode
 
 When entering monitor mode or enabling FIF_OTHER_BSS,
 rtw89_ops_configure_filter() updates B_AX_SNIFFER_MODE or clears
@@ -46,10 +46,10 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  5 files changed, 25 insertions(+), 3 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
-index 0d893b9..5014f89 100644
+index 7f84ee5..7be8810 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.h
 +++ b/drivers/net/wireless/realtek/rtw89/core.h
-@@ -6496,6 +6496,7 @@ struct rtw89_hal {
+@@ -6499,6 +6499,7 @@ struct rtw89_hal {
  	u8 cv;
  	u8 cid; /* enum rtw89_core_chip_cid */
  	u8 acv;
@@ -58,7 +58,7 @@ index 0d893b9..5014f89 100644
  	u32 antenna_tx;
  	u32 antenna_rx;
 diff --git a/drivers/net/wireless/realtek/rtw89/mac.c b/drivers/net/wireless/realtek/rtw89/mac.c
-index de8598b..73ada8b 100644
+index 41796bf..06fb263 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac.c
 @@ -2681,6 +2681,7 @@ void rtw89_mac_set_rx_fltr(struct rtw89_dev *rtwdev, u8 mac_idx, u32 rx_fltr)
@@ -79,10 +79,10 @@ index de8598b..73ada8b 100644
  		    B_AX_LSIG_PARITY_CHK_EN | B_AX_SIGA_CRC_CHK |
  		    B_AX_VHT_SU_SIGB_CRC_CHK | B_AX_VHT_MU_SIGB_CRC_CHK |
 diff --git a/drivers/net/wireless/realtek/rtw89/mac.h b/drivers/net/wireless/realtek/rtw89/mac.h
-index 8419bcd..ffd8c8a 100644
+index db42e33..b4a7cb7 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac.h
 +++ b/drivers/net/wireless/realtek/rtw89/mac.h
-@@ -1493,6 +1493,22 @@ void rtw89_mac_set_edcca_mode_bands(struct rtw89_dev *rtwdev, bool normal)
+@@ -1494,6 +1494,22 @@ void rtw89_mac_set_edcca_mode_bands(struct rtw89_dev *rtwdev, bool normal)
  	rtw89_mac_set_edcca_mode(rtwdev, RTW89_MAC_1, normal);
  }
  
@@ -106,10 +106,10 @@ index 8419bcd..ffd8c8a 100644
  void rtw89_mac_update_rts_threshold(struct rtw89_dev *rtwdev);
  void rtw89_mac_flush_txq(struct rtw89_dev *rtwdev, u32 queues, bool drop);
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index 87f5377..5949a7c 100644
+index 5a12639..2a3adf0 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
-@@ -325,7 +325,10 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
+@@ -335,7 +335,10 @@ static void rtw89_ops_configure_filter(struct ieee80211_hw *hw,
  	rtw89_leave_ps_mode(rtwdev);
  
  	*new_flags &= FIF_ALLMULTI | FIF_OTHER_BSS | FIF_FCSFAIL |

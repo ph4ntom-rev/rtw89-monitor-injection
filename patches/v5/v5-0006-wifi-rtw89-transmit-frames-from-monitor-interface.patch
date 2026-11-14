@@ -1,7 +1,8 @@
-From 89a64a0127b255d8d692ec05b43b8109cbaa811f Mon Sep 17 00:00:00 2001
+From 451c5e7729e969b5661a8a6666f9c897ecd6661a Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:06:00 +0500
-Subject: [PATCH v5 06/10] wifi: rtw89: transmit frames from monitor interfaces
+Subject: [PATCH rtw-next v5 06/10] wifi: rtw89: transmit frames from monitor
+ interfaces
 
 Frames injected on a monitor interface reach the driver either through
 rtw89_ops_tx() (with info->control.vif == NULL for a passive monitor,
@@ -36,7 +37,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  4 files changed, 88 insertions(+), 17 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index e82285a..1376329 100644
+index 9cf2b03..54605f7 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -1450,6 +1450,14 @@ static int rtw89_core_tx_write_link(struct rtw89_dev *rtwdev,
@@ -102,7 +103,7 @@ index e82285a..1376329 100644
  	rtw89_core_correct_mcc_chan(rtwdev, desc_info, rx_status, phy_ppdu);
  
  	/* In low power mode, it does RX in thread context. */
-@@ -7565,7 +7572,8 @@ static int rtw89_core_register_hw(struct rtw89_dev *rtwdev)
+@@ -7577,7 +7584,8 @@ static int rtw89_core_register_hw(struct rtw89_dev *rtwdev)
  		hw->wiphy->num_iftype_ext_capab = ARRAY_SIZE(rtw89_iftypes_ext_capa);
  	}
  
@@ -113,10 +114,10 @@ index e82285a..1376329 100644
  	hw->wiphy->max_scan_ssids = RTW89_SCANOFLD_MAX_SSID;
  	hw->wiphy->max_scan_ie_len = RTW89_SCANOFLD_MAX_IE_LEN;
 diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
-index c7e6ee2..4345b3e 100644
+index 78f6ef0..7b03154 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.h
 +++ b/drivers/net/wireless/realtek/rtw89/core.h
-@@ -7815,6 +7815,7 @@ struct rtw89_dev {
+@@ -7833,6 +7833,7 @@ struct rtw89_dev {
  
  	struct rtw89_debugfs *debugfs;
  	struct rtw89_vif __rcu *pure_monitor_mode_vif;
@@ -124,7 +125,7 @@ index c7e6ee2..4345b3e 100644
  	struct rtw89_led led;
  
  	/* HCI related data, keep last */
-@@ -7852,6 +7853,7 @@ struct rtw89_vif {
+@@ -7870,6 +7871,7 @@ struct rtw89_vif {
  	struct rtw89_roc roc;
  	bool offchan;
  	bool burst_active;
@@ -132,7 +133,7 @@ index c7e6ee2..4345b3e 100644
  
  	enum rtw89_mlo_mode mlo_mode;
  	struct rtw89_vif_ml_trans ml_trans;
-@@ -9305,12 +9307,18 @@ static inline struct rtw89_fw_suit *rtw89_fw_suit_get(struct rtw89_dev *rtwdev,
+@@ -9323,12 +9325,18 @@ static inline struct rtw89_fw_suit *rtw89_fw_suit_get(struct rtw89_dev *rtwdev,
  	return &fw_info->normal;
  }
  
@@ -153,7 +154,7 @@ index c7e6ee2..4345b3e 100644
  		if (!skb)
  			return NULL;
 diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
-index e67cb2f..c2b3761 100644
+index b38e04f..c8a6003 100644
 --- a/drivers/net/wireless/realtek/rtw89/mac80211.c
 +++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
 @@ -16,6 +16,12 @@
@@ -233,7 +234,7 @@ index e67cb2f..c2b3761 100644
  }
  
  static void rtw89_ops_wake_tx_queue(struct ieee80211_hw *hw,
-@@ -272,6 +306,13 @@ static int rtw89_ops_add_interface(struct ieee80211_hw *hw,
+@@ -282,6 +316,13 @@ static int rtw89_ops_add_interface(struct ieee80211_hw *hw,
  	if (ret)
  		goto unset_link;
  
@@ -247,7 +248,7 @@ index e67cb2f..c2b3761 100644
  	rtw89_recalc_pure_monitor_vif(rtwdev, NULL, true);
  	rtw89_recalc_lps(rtwdev);
  	return 0;
-@@ -295,6 +336,7 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+@@ -305,6 +346,7 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
  	u8 macid = rtw89_vif_get_main_macid(rtwvif);
  	u8 port = rtw89_vif_get_main_port(rtwvif);
  	struct rtw89_vif_link *rtwvif_link;
@@ -255,7 +256,7 @@ index e67cb2f..c2b3761 100644
  
  	lockdep_assert_wiphy(hw->wiphy);
  
-@@ -302,7 +344,13 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+@@ -312,7 +354,13 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
  		    vif->addr, vif->type, vif->p2p);
  
  	/* unpublish before tearing down the link, port and MAC ID */
@@ -270,7 +271,7 @@ index e67cb2f..c2b3761 100644
  
  	wiphy_delayed_work_cancel(hw->wiphy, &rtwvif->roc.roc_work);
  
-@@ -323,6 +371,13 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
+@@ -333,6 +381,13 @@ static void rtw89_ops_remove_interface(struct ieee80211_hw *hw,
  	rtw89_core_release_bit_map(rtwdev->hw_port, port);
  	rtw89_release_mac_id(rtwdev, macid);
  

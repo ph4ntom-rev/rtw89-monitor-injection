@@ -1,8 +1,8 @@
-From 8ec2bf488b95f1b13a6034538d39aae050880069 Mon Sep 17 00:00:00 2001
+From e9cb4cde3a57296190d2a01ede59346062c13fe3 Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:02:00 +0500
-Subject: [PATCH v5 02/10] wifi: rtw89: handle negative rate index for injected
- frames
+Subject: [PATCH rtw-next v5 02/10] wifi: rtw89: handle negative rate index for
+ injected frames
 
 When the radiotap header of an injected frame carries no rate,
 info->control.rates[0].idx is -1. rtw89_core_tx_update_injection()
@@ -23,7 +23,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 14 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index 58ee5ef..f103f75 100644
+index b7df97e..527593e 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -1239,12 +1239,25 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,

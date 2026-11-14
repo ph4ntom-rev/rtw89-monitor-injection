@@ -99,6 +99,10 @@ for p in "${cover}" "${patches[@]}"; do
         echo "[FAIL] Missing canonical From: header in ${bname}" >&2
         exit 1
     fi
+    if ! grep -q '^Subject: \[PATCH rtw-next v5 [0-9]\{2\}/10\] wifi: rtw89:' "${p}"; then
+        echo "[FAIL] Missing canonical [PATCH rtw-next v5 XX/10] Subject prefix in ${bname}" >&2
+        exit 1
+    fi
     if [[ "${idx}" -gt 0 ]]; then
         if ! grep -q '^Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>$' "${p}"; then
             echo "[FAIL] Missing Signed-off-by trailer in ${bname}" >&2
@@ -147,7 +151,10 @@ cat <<EOF
 [READY] Series validated locally. No email was sent.
 When ready for manual dry-run inspection in the future, run:
   git send-email --dry-run \\
+    --suppress-cc=bodycc \\
+    --from="Enver Ikromov <owner@ph4ntom-rev.uz>" \\
     --to="Ping-Ke Shih <pkshih@realtek.com>" \\
     --cc="linux-wireless@vger.kernel.org" \\
+    --cc="linux-kernel@vger.kernel.org" \\
     ${SERIES_DIR}/v5-*.patch
 EOF

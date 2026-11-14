@@ -1,8 +1,8 @@
-From 8ea6be169d14a51e86355eff1be9ef00a082ed15 Mon Sep 17 00:00:00 2001
+From 2920c436bdce01cc488d66c5597aee434a3f6a1f Mon Sep 17 00:00:00 2001
 From: Enver Ikromov <owner@ph4ntom-rev.uz>
 Date: Tue, 10 Nov 2026 18:07:00 +0500
-Subject: [PATCH v5 07/10] wifi: rtw89: send injected control frames through
- the management path
+Subject: [PATCH rtw-next v5 07/10] wifi: rtw89: send injected control frames
+ through the management path
 
 rtw89_core_get_tx_type() classifies every frame that is neither a
 management nor a null-data frame as data. Injected control frames
@@ -25,7 +25,7 @@ Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
  1 file changed, 14 insertions(+), 2 deletions(-)
 
 diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
-index 1376329..c48277a 100644
+index 54605f7..7003c24 100644
 --- a/drivers/net/wireless/realtek/rtw89/core.c
 +++ b/drivers/net/wireless/realtek/rtw89/core.c
 @@ -637,12 +637,21 @@ static enum rtw89_core_tx_type

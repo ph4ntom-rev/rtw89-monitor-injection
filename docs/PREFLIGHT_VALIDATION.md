@@ -4,15 +4,15 @@
 
 | Version | Status |
 | :--- | :--- |
-| v3 | Posted to `linux-wireless` on 2026-11-05 ([lore](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/)), waiting for review. |
+| v3 | Posted to `linux-wireless` on 2026-11-05 ([lore](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/)), superseded by `v5`. |
 | v4 | Never sent. Kept in `patches/v4/` for reference. |
-| v5 | [`patches/v5/`](../patches/v5/), 10 patches against `torvalds/linux` `d48723711bae`. Firmware-verified in IDA Pro, runtime-validated on RTL8852AE, and checked with `scripts/prepare_submission.sh` (**no email sent**; staged locally for future submission). |
+| v5 | [`patches/v5/`](../patches/v5/), 10 patches (`[PATCH rtw-next v5]`) against `pkshih/rtw.git` `rtw-next` `61a5eb87b2d9`. Firmware-verified in IDA Pro, runtime-validated on RTL8852AE, and checked with `scripts/prepare_submission.sh`. |
 
 ---
 
 ## 2. Static, preflight & CI checks for `v5`
 
-Validated locally against `v7.4-rc1` (`d48723711bae9b8cdc56719c448ba42fef28cbee`) via [`scripts/prepare_submission.sh`](../scripts/prepare_submission.sh) (log: [`prepare_submission_checkpatch.txt`](evidence/logs/prepare_submission_checkpatch.txt)) and continuously enforced by [GitHub Actions CI](../.github/workflows/ci.yml):
+Validated locally against `rtw-next` (`61a5eb87b2d9b4d5e353780b781cf691f39ba9e1`, Linux `v7.4-rc1`) via [`scripts/prepare_submission.sh`](../scripts/prepare_submission.sh) (log: [`prepare_submission_checkpatch.txt`](evidence/logs/prepare_submission_checkpatch.txt)) and continuously enforced by [GitHub Actions CI](../.github/workflows/ci.yml):
 
 | Check | Result |
 | :--- | :--- |

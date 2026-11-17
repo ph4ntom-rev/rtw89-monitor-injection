@@ -1,0 +1,46 @@
+From 13988ce928fbdd8bcdd9ebdd48d035e7b914225f Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Tue, 17 Nov 2026 14:01:00 +0500
+Subject: [PATCH rtw-next v6 1/5] wifi: rtw89: avoid NULL vif dereference in
+ rtw89_ops_tx()
+
+Injecting a raw frame on a passive monitor interface while a station or
+AP interface is also up causes a kernel NULL pointer dereference,
+because mac80211 has no virtual monitor vif in concurrent mode and
+passes a NULL vif to the driver TX path.
+
+Check the vif pointer with vif_to_rtwvif_safe() and drop frames without
+a vif.
+
+Fixes: a0e97ae3f332 ("wifi: rtw89: add ieee80211::remain_on_channel ops")
+Cc: stable@vger.kernel.org
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index c85ea82..7a55fed 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -23,11 +23,16 @@ static void rtw89_ops_tx(struct ieee80211_hw *hw,
+ 	struct rtw89_dev *rtwdev = hw->priv;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 	struct ieee80211_vif *vif = info->control.vif;
+-	struct rtw89_vif *rtwvif = vif_to_rtwvif(vif);
++	struct rtw89_vif *rtwvif = vif_to_rtwvif_safe(vif);
+ 	struct ieee80211_sta *sta = control->sta;
+ 	u32 flags = IEEE80211_SKB_CB(skb)->flags;
+ 	int ret, qsel;
+ 
++	if (unlikely(!rtwvif)) {
++		ieee80211_free_txskb(hw, skb);
++		return;
++	}
++
+ 	if (rtwvif->offchan && !(flags & IEEE80211_TX_CTL_TX_OFFCHAN) && sta) {
+ 		struct rtw89_sta *rtwsta = sta_to_rtwsta(sta);
+ 
+-- 
+2.56.0.windows.4
+

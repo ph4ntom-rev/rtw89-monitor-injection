@@ -1,0 +1,65 @@
+From 6c320fb0777c3bf706b3fe977131248e3bf2e9ef Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Tue, 17 Nov 2026 14:04:03 +0500
+Subject: [PATCH rtw-next v6 0/5] wifi: rtw89: monitor mode and raw frame injection fixes
+
+This series fixes a NULL vif dereference and a negative radiotap rate
+index bug on the TX path, restores the operating channel after monitor
+down/up on non-chanctx devices, and fixes control-frame seq_ctrl reads,
+sequence preservation, NO_ACK, and retry limits for raw 802.11 frame
+injection.
+
+Tested on RTL8852AE (10ec:8852, firmware 0.13.36.2) across 2.4 GHz and
+5 GHz.
+
+Changes in v6:
+- Focus the series strictly on the standalone monitor interface case
+  (plus the concurrent NULL-vif crash guard in patch 1), dropping former
+  patches 3, 4, 5, 6, and 8 (RX filter changes, RCU pure_monitor_mode_vif,
+  AP self role, NL80211_FEATURE_ACTIVE_MONITOR, and host TX hook skips).
+- Rewrite all commit messages concisely without function-level flow.
+- Patch 1: use vif_to_rtwvif_safe().
+- Patch 2: clamp negative rate indices to 0 with max_t().
+- Patch 3 (was 10): move before injection changes, add
+  rtwdev->support_chanctx, and reuse IEEE80211_CONF_CHANGE_CHANNEL in
+  rtw89_ops_config().
+- Patch 4 (was 7): keep control frames on the AC queue and only set
+  seq = 0 for control frames.
+- Patch 5 (was 9): simplify ASSIGN_SEQ handling and drop dead RTS/CTS,
+  rate-index clamping, upd_wlan_hdr, and pci.c counter changes.
+- Rebase onto latest rtw-next and wrap all lines to <= 80 columns.
+
+Changes in v5:
+- Split the NULL vif fix and negative rate index fix out as standalone
+  patches 1-2 with Fixes: and Cc: stable tags.
+- Split monitor injection into focused patches.
+- Honor ASSIGN_SEQ, retries, and NO_ACK for injected frames.
+- Restore channel on leaving idle for non-chanctx devices.
+
+Changes in v3:
+- Split into a patch series and use driver abstractions instead of
+  direct register writes.
+
+v5: https://lore.kernel.org/linux-wireless/20261113235211.1911-1-owner@ph4ntom-rev.uz/
+v3: https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/
+v2: https://lore.kernel.org/linux-wireless/179371849554.20972.16232816164394690660@ph4ntom-rev.uz/
+v1 (RFC): https://lore.kernel.org/linux-wireless/1a196d6dfbc.35537d221913104450.3720060455831933789@zoho.com/
+
+Enver Ikromov (5):
+  wifi: rtw89: avoid NULL vif dereference in rtw89_ops_tx()
+  wifi: rtw89: handle negative rate index for injected frames
+  wifi: rtw89: restore channel when leaving idle on non-chanctx devices
+  wifi: rtw89: avoid reading seq_ctrl on control frames
+  wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for injected frames
+
+ drivers/net/wireless/realtek/rtw89/core.c     | 27 ++++++++++++++++---
+ drivers/net/wireless/realtek/rtw89/core.h     |  3 +++
+ drivers/net/wireless/realtek/rtw89/mac.h      |  2 ++
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 16 ++++++++++-
+ 4 files changed, 44 insertions(+), 4 deletions(-)
+
+
+base-commit: badf4c3c7679871a50cff1150f66e63187201757
+-- 
+2.56.0.windows.4
+

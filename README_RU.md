@@ -1,4 +1,4 @@
-# rtw89: исправления режима монитора и инъекции кадров (`PATCH v5`)
+# rtw89: исправления режима монитора и инъекции кадров (`PATCH v6`)
 
 [![CI](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml/badge.svg)](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml)
 [![License: GPL-2.0 OR BSD-3-Clause](https://img.shields.io/badge/License-GPL--2.0%20OR%20BSD--3--Clause-blue.svg)](LICENSE)
@@ -17,30 +17,25 @@ monitor-интерфейсе, и восстанавливают рабочий �
 
 | | |
 | :--- | :--- |
-| Текущая серия | [`patches/v5/`](patches/v5/), 10 патчей (`[PATCH rtw-next v5]`), база `pkshih/rtw.git` `rtw-next` [`61a5eb87b2d9`](https://github.com/pkshih/rtw/commit/61a5eb87b2d9b4d5e353780b781cf691f39ba9e1) (Linux 7.4-rc1) |
-| Рассылка | [`[PATCH rtw-next v5 00/10]`](https://lore.kernel.org/linux-wireless/20261113235211.1911-1-owner@ph4ntom-rev.uz/) отправлена в `linux-wireless` (2026-11-13); заменяет [v3](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/) (v4 не отправлялась). |
+| Текущая серия | [`patches/v6/`](patches/v6/), 5 патчей (`[PATCH rtw-next v6]`, `+44/-4`), база `pkshih/rtw.git` `rtw-next` [`badf4c3c7679`](https://github.com/pkshih/rtw/commit/badf4c3c7679871a50cff1150f66e63187201757) (Linux 7.4-rc1) |
+| Рассылка | [`[PATCH rtw-next v6 0/5]`](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/) отправлена в `linux-wireless` (2026-11-17); заменяет [v5](https://lore.kernel.org/linux-wireless/20261113235211.1911-1-owner@ph4ntom-rev.uz/) и [v3](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/). |
 | Сборка и статика | Каждый патч собирается отдельно; `W=1` и sparse (`C=1`) с `CONFIG_PROVE_LOCKING=y` дают `0` новых предупреждений; `checkpatch.pl --strict` — `0` ошибок/предупреждений; `patch_rtw89.py` проверяется на `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2) и `v7.4-rc1` с реальной Kbuild-сборкой `make W=1 C=1 modules` на LTS `v6.6`, `v6.12`, `v6.18` и `v7.4-rc1` в [CI](.github/workflows/ci.yml). |
 | Проверка на железе | **RTL8852AE** (`10ec:8852`, прошивка `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — верифицирована в IDA Pro 9.5 и протестирована вживую через `tracefs`/kprobes + `verify_hardware.py` (`PASS`), см. [отчёт и скриншоты](docs/PREFLIGHT_VALIDATION.md). |
 | Не проверено на железе | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB-адаптеры, DBCC. |
 
-## Серия v5
+## Серия v6
 
 | # | Патч | Тип |
 | :-- | :--- | :--- |
-| 1 | `wifi: rtw89: avoid NULL vif dereference in rtw89_ops_tx()` | исправление, `Fixes:` + `Cc: stable` |
-| 2 | `wifi: rtw89: handle negative rate index for injected frames` | исправление, `Fixes:` + `Cc: stable` |
-| 3 | `wifi: rtw89: fix RX filter configuration for monitor mode` | исправление (`B_AX_SNIFFER_MODE` + `FIF_OTHER_BSS`) |
-| 4 | `wifi: rtw89: protect pure_monitor_mode_vif with RCU` | RCU и отслеживание единственного monitor-VIF |
-| 5 | `wifi: rtw89: use AP self role for monitor interfaces` | инъекция (подтверждено по прошивке `0.13.36.2`) |
-| 6 | `wifi: rtw89: transmit frames from monitor interfaces` | инъекция (standalone + `MONITOR_FLAG_ACTIVE`) |
-| 7 | `wifi: rtw89: send injected control frames through the management path` | инъекция |
-| 8 | `wifi: rtw89: skip host-side TX hooks for injected frames` | инъекция |
-| 9 | `wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for injected frames` | инъекция (`max_rate_tries`, статус `NO_ACK`) |
-| 10 | `wifi: rtw89: restore channel when leaving idle on non-chanctx devices` | исправление (`CONF_CHANGE_IDLE \| MONITOR`) |
+| 1 | `wifi: rtw89: avoid NULL vif dereference in rtw89_ops_tx()` | исправление (`vif_to_rtwvif_safe()`), `Fixes:` + `Cc: stable` |
+| 2 | `wifi: rtw89: handle negative rate index for injected frames` | исправление (`max_t(s8, ..., 0)`), `Fixes:` + `Cc: stable` |
+| 3 | `wifi: rtw89: restore channel when leaving idle on non-chanctx devices` | исправление (`rtwdev->support_chanctx` + `CONF_CHANGE_CHANNEL`) |
+| 4 | `wifi: rtw89: avoid reading seq_ctrl on control frames` | исправление (`ieee80211_is_ctl()`) |
+| 5 | `wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for injected frames` | инъекция (`!ASSIGN_SEQ`, `NO_ACK`, `max_rate_tries = 63`) |
 
 Подробное описание каждого патча, out-of-tree слоя `rtw89_mon`, логов и скриншотов приведено в
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-[cover letter](patches/v5/v5-0000-cover-letter.patch) и
+[cover letter](patches/v6/v6-0000-cover-letter.patch) и
 [docs/PREFLIGHT_VALIDATION.md](docs/PREFLIGHT_VALIDATION.md).
 
 ![Сводка аппаратной валидации на RTL8852AE](docs/evidence/screenshots/04_hardware_validation_summary.png)

@@ -1,4 +1,4 @@
-# rtw89: monitor mode and raw frame injection fixes (`PATCH v5`)
+# rtw89: monitor mode and raw frame injection fixes (`PATCH v6`)
 
 [![CI](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml/badge.svg)](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml)
 [![License: GPL-2.0 OR BSD-3-Clause](https://img.shields.io/badge/License-GPL--2.0%20OR%20BSD--3--Clause-blue.svg)](LICENSE)
@@ -15,30 +15,25 @@ idle across monitor restarts. Firmware is not modified.
 
 | | |
 | :--- | :--- |
-| Current series | [`patches/v5/`](patches/v5/), 10 patches (`[PATCH rtw-next v5]`), base `pkshih/rtw.git` `rtw-next` [`61a5eb87b2d9`](https://github.com/pkshih/rtw/commit/61a5eb87b2d9b4d5e353780b781cf691f39ba9e1) (Linux 7.4-rc1) |
-| Mailing list | [`[PATCH rtw-next v5 00/10]`](https://lore.kernel.org/linux-wireless/20261113235211.1911-1-owner@ph4ntom-rev.uz/) posted on `linux-wireless` (2026-11-13); supersedes [v3](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/) (v4 was never sent). |
+| Current series | [`patches/v6/`](patches/v6/), 5 patches (`[PATCH rtw-next v6]`, `+44/-4`), base `pkshih/rtw.git` `rtw-next` [`badf4c3c7679`](https://github.com/pkshih/rtw/commit/badf4c3c7679871a50cff1150f66e63187201757) (Linux 7.4-rc1) |
+| Mailing list | [`[PATCH rtw-next v6 0/5]`](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/) posted on `linux-wireless` (2026-11-17); supersedes [v5](https://lore.kernel.org/linux-wireless/20261113235211.1911-1-owner@ph4ntom-rev.uz/) and [v3](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/). |
 | Build & static checks | Each patch builds on its own; `W=1` and sparse (`C=1`) with `CONFIG_PROVE_LOCKING=y` show `0` new warnings; `checkpatch.pl --strict` reports `0` errors/warnings/checks; `patch_rtw89.py` verified across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` with Kbuild `make W=1 C=1 modules` on LTS `v6.6`, `v6.12`, `v6.18`, and `v7.4-rc1` in [CI](.github/workflows/ci.yml). |
 | Runtime & FW verification | **RTL8852AE** (`10ec:8852`, firmware `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — verified in IDA Pro 9.5 and live-tested via `tracefs`/kprobes + `verify_hardware.py` (`PASS`), see [validation & screenshots](docs/PREFLIGHT_VALIDATION.md). |
 | Not runtime-tested | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB devices, DBCC. |
 
-## The v5 series
+## The v6 series
 
 | # | Patch | Kind |
 | :-- | :--- | :--- |
-| 1 | `wifi: rtw89: avoid NULL vif dereference in rtw89_ops_tx()` | fix, `Fixes:` + `Cc: stable` |
-| 2 | `wifi: rtw89: handle negative rate index for injected frames` | fix, `Fixes:` + `Cc: stable` |
-| 3 | `wifi: rtw89: fix RX filter configuration for monitor mode` | fix (`B_AX_SNIFFER_MODE` + `FIF_OTHER_BSS`) |
-| 4 | `wifi: rtw89: protect pure_monitor_mode_vif with RCU` | RCU + sole-monitor tracking |
-| 5 | `wifi: rtw89: use AP self role for monitor interfaces` | injection (FW `0.13.36.2` verified) |
-| 6 | `wifi: rtw89: transmit frames from monitor interfaces` | injection (standalone + `MONITOR_FLAG_ACTIVE`) |
-| 7 | `wifi: rtw89: send injected control frames through the management path` | injection |
-| 8 | `wifi: rtw89: skip host-side TX hooks for injected frames` | injection |
-| 9 | `wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for injected frames` | injection (`max_rate_tries`, `NO_ACK` status) |
-| 10 | `wifi: rtw89: restore channel when leaving idle on non-chanctx devices` | fix (`CONF_CHANGE_IDLE \| MONITOR`) |
+| 1 | `wifi: rtw89: avoid NULL vif dereference in rtw89_ops_tx()` | fix (`vif_to_rtwvif_safe()`), `Fixes:` + `Cc: stable` |
+| 2 | `wifi: rtw89: handle negative rate index for injected frames` | fix (`max_t(s8, ..., 0)`), `Fixes:` + `Cc: stable` |
+| 3 | `wifi: rtw89: restore channel when leaving idle on non-chanctx devices` | fix (`rtwdev->support_chanctx` + `CONF_CHANGE_CHANNEL`) |
+| 4 | `wifi: rtw89: avoid reading seq_ctrl on control frames` | fix (`ieee80211_is_ctl()`) |
+| 5 | `wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for injected frames` | injection (`!ASSIGN_SEQ`, `NO_ACK`, `max_rate_tries = 63`) |
 
 Details of every patch and the `rtw89_mon` out-of-tree layer are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the
-[cover letter](patches/v5/v5-0000-cover-letter.patch), and
+[cover letter](patches/v6/v6-0000-cover-letter.patch), and
 [docs/PREFLIGHT_VALIDATION.md](docs/PREFLIGHT_VALIDATION.md).
 
 ![End-to-End Hardware Validation Summary](docs/evidence/screenshots/04_hardware_validation_summary.png)

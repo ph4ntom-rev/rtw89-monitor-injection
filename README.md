@@ -1,4 +1,4 @@
-# rtw89: monitor mode and raw frame injection fixes (`PATCH v6`)
+# rtw89: monitor mode and raw frame injection fixes (`PATCH v7`)
 
 [![CI](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml/badge.svg)](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml)
 [![License: GPL-2.0 OR BSD-3-Clause](https://img.shields.io/badge/License-GPL--2.0%20OR%20BSD--3--Clause-blue.svg)](LICENSE)
@@ -15,13 +15,13 @@ idle across monitor restarts. Firmware is not modified.
 
 | | |
 | :--- | :--- |
-| Current series | [`patches/v6/`](patches/v6/), 5 patches (`[PATCH rtw-next v6]`, `+44/-4`), base `pkshih/rtw.git` `rtw-next` [`badf4c3c7679`](https://github.com/pkshih/rtw/commit/badf4c3c7679871a50cff1150f66e63187201757) (Linux 7.4-rc1) |
-| Mailing list | [`[PATCH rtw-next v6 0/5]`](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/) posted on `linux-wireless` (2026-11-17); supersedes [v5](https://lore.kernel.org/linux-wireless/20261113235211.1911-1-owner@ph4ntom-rev.uz/) and [v3](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/). |
+| Current series | [`patches/v7/`](patches/v7/), 5 patches (`[PATCH rtw-next v7]`, `+42/-4`), base `pkshih/rtw.git` `rtw-next` [`0bdc579dbfc2`](https://github.com/pkshih/rtw/commit/0bdc579dbfc251a6b6838ee9459b6771b948c617) (Linux 7.4-rc1) |
+| Mailing list | [`[PATCH rtw-next v7 0/5]`](https://lore.kernel.org/linux-wireless/20261118180435.904-1-owner@ph4ntom-rev.uz/) posted on `linux-wireless` (2026-11-18); supersedes [v6](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/) and [v5](https://lore.kernel.org/linux-wireless/20261113235211.1911-1-owner@ph4ntom-rev.uz/). |
 | Build & static checks | Each patch builds on its own; `W=1` and sparse (`C=1`) with `CONFIG_PROVE_LOCKING=y` show `0` new warnings; `checkpatch.pl --strict` reports `0` errors/warnings/checks; `patch_rtw89.py` verified across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` with Kbuild `make W=1 C=1 modules` on LTS `v6.6`, `v6.12`, `v6.18`, and `v7.4-rc1` in [CI](.github/workflows/ci.yml). |
 | Runtime & FW verification | **RTL8852AE** (`10ec:8852`, firmware `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — verified in IDA Pro 9.5 and live-tested via `tracefs`/kprobes + `verify_hardware.py` (`PASS`), see [validation & screenshots](docs/PREFLIGHT_VALIDATION.md). |
 | Not runtime-tested | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB devices, DBCC. |
 
-## The v6 series
+## The v7 series
 
 | # | Patch | Kind |
 | :-- | :--- | :--- |
@@ -33,7 +33,7 @@ idle across monitor restarts. Firmware is not modified.
 
 Details of every patch and the `rtw89_mon` out-of-tree layer are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the
-[cover letter](patches/v6/v6-0000-cover-letter.patch), and
+[cover letter](patches/v7/v7-0000-cover-letter.patch), and
 [docs/PREFLIGHT_VALIDATION.md](docs/PREFLIGHT_VALIDATION.md).
 
 ![End-to-End Hardware Validation Summary](docs/evidence/screenshots/04_hardware_validation_summary.png)

@@ -10,7 +10,7 @@ env:
   # Opt into Node 24 runtime ahead of GitHub's Node 20 deprecation cutoff
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   # Upstream rtw-next commit (pkshih/rtw.git) the patch series is generated against
-  KERNEL_BASE: badf4c3c7679871a50cff1150f66e63187201757
+  KERNEL_BASE: 0bdc579dbfc251a6b6838ee9459b6771b948c617
 
 jobs:
   scripts:
@@ -124,11 +124,11 @@ jobs:
             M=drivers/net/wireless/realtek/rtw89 modules 2>&1 | tee ../base.log
           grep -E 'warning:|error:' ../base.log | sed -E 's/:[0-9]+:[0-9]+:/:/' | sort > ../base.warn || true
 
-      - name: Apply PATCH v6 (git am) and check every patch builds
+      - name: Apply PATCH v7 (git am) and check every patch builds
         working-directory: linux
         run: |
           set -euo pipefail
-          mapfile -t series < <(ls ../repo/patches/v6/v6-00*-wifi-*.patch | sort)
+          mapfile -t series < <(ls ../repo/patches/v7/v7-00*-wifi-*.patch | sort)
           for p in "${series[@]}"; do
             git am -q "$p"
             make -s -j"$(nproc)" KBUILD_MODPOST_WARN=1 \
@@ -144,7 +144,7 @@ jobs:
             M=drivers/net/wireless/realtek/rtw89 modules 2>&1 | tee ../v5.log
           grep -E 'warning:|error:' ../v5.log | sed -E 's/:[0-9]+:[0-9]+:/:/' | sort > ../v5.warn || true
           if comm -13 ../base.warn ../v5.warn | grep .; then
-            echo "::error::PATCH v6 introduces new compiler or sparse warnings"
+            echo "::error::PATCH v7 introduces new compiler or sparse warnings"
             exit 1
           fi
 

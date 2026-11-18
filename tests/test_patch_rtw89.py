@@ -725,6 +725,27 @@ class PatchRtw89TestCase(unittest.TestCase):
             if idx in (1, 2):
                 self.assertIn("Cc: stable@vger.kernel.org", content)
 
+    def test_v7_patch_series_metadata_and_hygiene(self):
+        v7_dir = REPO_ROOT / "patches" / "v7"
+        self.assertTrue(v7_dir.is_dir(), "patches/v7 directory missing")
+        patches = sorted(v7_dir.glob("v7-000[0-5]-*.patch"))
+        self.assertEqual(len(patches), 6, "Expected cover letter + 5 patches in patches/v7/")
+
+        cover = patches[0].read_text(encoding="utf-8")
+        self.assertIn("Subject: [PATCH rtw-next v7 0/5] wifi: rtw89:", cover)
+        self.assertIn("base-commit: 0bdc579dbfc251a6b6838ee9459b6771b948c617", cover)
+        self.assertNotIn("\r\n", cover)
+
+        for idx, p in enumerate(patches[1:], 1):
+            content = p.read_text(encoding="utf-8")
+            self.assertTrue(content.startswith("From "), f"Missing mbox From line in {p.name}")
+            self.assertIn("From: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
+            self.assertIn(f"Subject: [PATCH rtw-next v7 {idx}/5]", content)
+            self.assertIn("Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
+            self.assertNotIn("\r\n", content, f"CRLF line endings in {p.name}")
+            if idx in (1, 2):
+                self.assertIn("Cc: stable@vger.kernel.org", content)
+
     def test_cross_kernel_feature_flags_and_dbcc_rx_filter_placement(self):
         self.assertFalse(hasattr(patch_rtw89, "patch_txrx_h"))
         mon_c = (REPO_ROOT / "src" / "rtw89_mon.c").read_text(encoding="utf-8")

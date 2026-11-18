@@ -1,0 +1,68 @@
+From 1212d7c6a04362277780a767dfab0393ff719f43 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Wed, 18 Nov 2026 22:53:00 +0500
+Subject: [PATCH rtw-next v7 3/5] wifi: rtw89: restore channel when leaving
+ idle on non-chanctx devices
+
+Fix the operating channel not being restored after bringing a monitor
+interface down and back up on devices that do not use native chanctx
+callbacks (such as RTL8852AE when firmware lacks beacon filtering).
+
+Stopping the interface powers down the PHY while mac80211 retains the
+previous chandef and omits IEEE80211_CONF_CHANGE_CHANNEL on restart.
+Record support_chanctx in rtwdev and set IEEE80211_CONF_CHANGE_CHANNEL
+when re-entering monitor mode from idle on non-chanctx devices so the
+channel is applied again.
+
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/core.c     | 1 +
+ drivers/net/wireless/realtek/rtw89/core.h     | 1 +
+ drivers/net/wireless/realtek/rtw89/mac80211.c | 7 +++++++
+ 3 files changed, 9 insertions(+)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
+index 37ff745..8333b26 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.c
++++ b/drivers/net/wireless/realtek/rtw89/core.c
+@@ -7761,6 +7761,7 @@ struct rtw89_dev *rtw89_alloc_ieee80211_hw(struct device *device,
+ 	rtwdev->board = info->board;
+ 	rtwdev->fw.req.firmware = firmware;
+ 	rtwdev->fw.fw_format = fw_format;
++	rtwdev->support_chanctx = !no_chanctx;
+ 	rtwdev->support_mlo = support_mlo;
+ 
+ 	bitmap_copy(rtwdev->quirks, &chip->default_quirks, NUM_OF_RTW89_QUIRKS);
+diff --git a/drivers/net/wireless/realtek/rtw89/core.h b/drivers/net/wireless/realtek/rtw89/core.h
+index 8e93cf1..780ec47 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.h
++++ b/drivers/net/wireless/realtek/rtw89/core.h
+@@ -7703,6 +7703,7 @@ struct rtw89_dev {
+ 	const struct rtw89_io_ops *io;
+ 
+ 	bool dbcc_en;
++	bool support_chanctx;
+ 	bool support_mlo;
+ 	enum rtw89_mlo_dbcc_mode mlo_dbcc_mode;
+ 	struct rtw89_hw_scan_info scan_info;
+diff --git a/drivers/net/wireless/realtek/rtw89/mac80211.c b/drivers/net/wireless/realtek/rtw89/mac80211.c
+index 7a55fed..98f4b5c 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac80211.c
++++ b/drivers/net/wireless/realtek/rtw89/mac80211.c
+@@ -97,6 +97,13 @@ static int rtw89_ops_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
+ 
+ 	rtw89_leave_ps_mode(rtwdev);
+ 
++	if (!rtwdev->support_chanctx &&
++	    changed & IEEE80211_CONF_CHANGE_IDLE &&
++	    changed & IEEE80211_CONF_CHANGE_MONITOR &&
++	    !(hw->conf.flags & IEEE80211_CONF_IDLE) &&
++	    hw->conf.flags & IEEE80211_CONF_MONITOR)
++		changed |= IEEE80211_CONF_CHANGE_CHANNEL;
++
+ 	if ((changed & IEEE80211_CONF_CHANGE_IDLE) &&
+ 	    !(hw->conf.flags & IEEE80211_CONF_IDLE))
+ 		rtw89_leave_ips(rtwdev);
+-- 
+2.56.0.windows.4
+

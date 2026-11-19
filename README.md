@@ -15,8 +15,8 @@ idle across monitor restarts. Firmware is not modified.
 
 | | |
 | :--- | :--- |
-| Current series | [`patches/v8/`](patches/v8/), 5 patches (`[PATCH rtw-next v8]`, `+42/-4`; patches 1–4 `Acked-by: Ping-Ke Shih`, patch 3 `Reviewed-by: Zong-Zhe Yang`), base `pkshih/rtw.git` `rtw-next` [`0bdc579dbfc2`](https://github.com/pkshih/rtw/commit/0bdc579dbfc251a6b6838ee9459b6771b948c617) (Linux 7.4-rc1) |
-| Mailing list | [`[PATCH rtw-next v8 0/5]`](https://lore.kernel.org/linux-wireless/20261119080328.391-1-owner@ph4ntom-rev.uz/) posted on `linux-wireless` (2026-11-19); supersedes [v7](https://lore.kernel.org/linux-wireless/20261118180435.904-1-owner@ph4ntom-rev.uz/) and [v6](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/). |
+| Current series | [`patches/v8/`](patches/v8/), 5 patches (`[PATCH rtw-next v8]`, `+42/-4`; **all 5/5 `Acked-by: Ping-Ke Shih`**, patch 3 `Reviewed-by: Zong-Zhe Yang`), base `pkshih/rtw.git` `rtw-next` [`0bdc579dbfc2`](https://github.com/pkshih/rtw/commit/0bdc579dbfc251a6b6838ee9459b6771b948c617) (Linux 7.4-rc1) |
+| Mailing list | [`[PATCH rtw-next v8 0/5]`](https://lore.kernel.org/linux-wireless/20261119080328.391-1-owner@ph4ntom-rev.uz/) posted on `linux-wireless` (2026-11-19; [final 5/5 Acked-by](https://lore.kernel.org/linux-wireless/077a0d609e3c4cebabe6b1be5aa9eb09@realtek.com/)); supersedes [v7](https://lore.kernel.org/linux-wireless/20261118180435.904-1-owner@ph4ntom-rev.uz/) and [v6](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/). |
 | Build & static checks | Each patch builds on its own; `W=1` and sparse (`C=1`) with `CONFIG_PROVE_LOCKING=y` show `0` new warnings; `checkpatch.pl --strict` reports `0` errors/warnings/checks; `patch_rtw89.py` verified across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` with Kbuild `make W=1 C=1 modules` on LTS `v6.6`, `v6.12`, `v6.18`, and `v7.4-rc1` in [CI](.github/workflows/ci.yml). |
 | Runtime & FW verification | **RTL8852AE** (`10ec:8852`, firmware `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — verified in IDA Pro 9.5 and live-tested via `tracefs`/kprobes + `verify_hardware.py` (`PASS`), see [validation & screenshots](docs/PREFLIGHT_VALIDATION.md). |
 | Not runtime-tested | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB devices, DBCC. |
@@ -120,8 +120,8 @@ sudo ip link set mon0act up
 ## Repository layout
 
 ```text
-patches/v5/            current 10-patch series + cover letter
-patches/v2..v4/        earlier versions, kept for reference
+patches/v8/            current 5-patch upstream series + cover letter (5/5 Acked-by)
+patches/v2..v7/        earlier versions, kept for reference
 src/rtw89_mon.{c,h}    helper code linked into rtw89_core by patch_rtw89.py
 scripts/               patch_rtw89.py, build_module.sh, dkms_prepare.sh, dkms_pre_build.sh,
                        prepare_submission.sh, verify_hardware.py, verify_monitor_diag.py

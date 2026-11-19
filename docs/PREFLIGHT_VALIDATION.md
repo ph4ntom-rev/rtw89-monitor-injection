@@ -1,4 +1,4 @@
-# Validation & Evidence Report (`PATCH v5`)
+# Validation & Evidence Report (`PATCH v8`)
 
 ## 1. Submission status
 
@@ -6,7 +6,10 @@
 | :--- | :--- |
 | v3 | Posted to `linux-wireless` on 2026-11-05 ([lore](https://lore.kernel.org/linux-wireless/20261104203051.564-1-owner@ph4ntom-rev.uz/)), superseded by `v5`. |
 | v4 | Never sent. Kept in `patches/v4/` for reference. |
-| v5 | [`patches/v5/`](../patches/v5/), 10 patches (`[PATCH rtw-next v5]`) against `pkshih/rtw.git` `rtw-next` `61a5eb87b2d9`. Firmware-verified in IDA Pro, runtime-validated on RTL8852AE, and checked with `scripts/prepare_submission.sh`. |
+| v5 | [`patches/v5/`](../patches/v5/), 10 patches (`[PATCH rtw-next v5]`, [lore](https://lore.kernel.org/linux-wireless/20261113235211.1911-1-owner@ph4ntom-rev.uz/)). Superseded by `v6` after maintainer feedback and RTL8852AE firmware/A-B validation. |
+| v6 | [`patches/v6/`](../patches/v6/), 5 patches (`[PATCH rtw-next v6]`, [lore](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/)). Narrowed to `+44/-4` standalone monitor & TX fixes. |
+| v7 | [`patches/v7/`](../patches/v7/), 5 patches (`[PATCH rtw-next v7]`, [lore](https://lore.kernel.org/linux-wireless/20261118180435.904-1-owner@ph4ntom-rev.uz/)). Added `IEEE80211_CONF_MONITOR` guard in `rtw89_ops_config()`. |
+| **v8 (current)** | [`patches/v8/`](../patches/v8/), 5 patches (`[PATCH rtw-next v8]`, `+42/-4`, [lore](https://lore.kernel.org/linux-wireless/20261119080328.391-1-owner@ph4ntom-rev.uz/)) against `pkshih/rtw.git` `rtw-next` `0bdc579dbfc2` — **all 5/5 `Acked-by: Ping-Ke Shih`** and `3/5` `Reviewed-by: Zong-Zhe Yang`. |
 
 ---
 

@@ -17,8 +17,8 @@ monitor-интерфейсе, и восстанавливают рабочий �
 
 | | |
 | :--- | :--- |
-| Текущая серия | [`patches/v8/`](patches/v8/), 5 патчей (`[PATCH rtw-next v8]`, `+42/-4`; патчи 1–4 `Acked-by: Ping-Ke Shih`, патч 3 `Reviewed-by: Zong-Zhe Yang`), база `pkshih/rtw.git` `rtw-next` [`0bdc579dbfc2`](https://github.com/pkshih/rtw/commit/0bdc579dbfc251a6b6838ee9459b6771b948c617) (Linux 7.4-rc1) |
-| Рассылка | [`[PATCH rtw-next v8 0/5]`](https://lore.kernel.org/linux-wireless/20261119080328.391-1-owner@ph4ntom-rev.uz/) отправлена в `linux-wireless` (2026-11-19); заменяет [v7](https://lore.kernel.org/linux-wireless/20261118180435.904-1-owner@ph4ntom-rev.uz/) и [v6](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/). |
+| Текущая серия | [`patches/v8/`](patches/v8/), 5 патчей (`[PATCH rtw-next v8]`, `+42/-4`; **все 5/5 `Acked-by: Ping-Ke Shih`**, патч 3 `Reviewed-by: Zong-Zhe Yang`), база `pkshih/rtw.git` `rtw-next` [`0bdc579dbfc2`](https://github.com/pkshih/rtw/commit/0bdc579dbfc251a6b6838ee9459b6771b948c617) (Linux 7.4-rc1) |
+| Рассылка | [`[PATCH rtw-next v8 0/5]`](https://lore.kernel.org/linux-wireless/20261119080328.391-1-owner@ph4ntom-rev.uz/) отправлена в `linux-wireless` (2026-11-19; [финальный 5/5 Acked-by](https://lore.kernel.org/linux-wireless/077a0d609e3c4cebabe6b1be5aa9eb09@realtek.com/)); заменяет [v7](https://lore.kernel.org/linux-wireless/20261118180435.904-1-owner@ph4ntom-rev.uz/) и [v6](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/). |
 | Сборка и статика | Каждый патч собирается отдельно; `W=1` и sparse (`C=1`) с `CONFIG_PROVE_LOCKING=y` дают `0` новых предупреждений; `checkpatch.pl --strict` — `0` ошибок/предупреждений; `patch_rtw89.py` проверяется на `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2) и `v7.4-rc1` с реальной Kbuild-сборкой `make W=1 C=1 modules` на LTS `v6.6`, `v6.12`, `v6.18` и `v7.4-rc1` в [CI](.github/workflows/ci.yml). |
 | Проверка на железе | **RTL8852AE** (`10ec:8852`, прошивка `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — верифицирована в IDA Pro 9.5 и протестирована вживую через `tracefs`/kprobes + `verify_hardware.py` (`PASS`), см. [отчёт и скриншоты](docs/PREFLIGHT_VALIDATION.md). |
 | Не проверено на железе | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB-адаптеры, DBCC. |
@@ -123,8 +123,8 @@ sudo ip link set mon0act up
 ## Структура репозитория
 
 ```text
-patches/v5/            актуальная серия из 10 патчей + cover letter
-patches/v2..v4/        предыдущие версии, сохранены для истории
+patches/v8/            актуальная апстрим-серия из 5 патчей + cover letter (5/5 Acked-by)
+patches/v2..v7/        предыдущие версии, сохранены для истории
 src/rtw89_mon.{c,h}    вспомогательный модуль, подключаемый к rtw89_core через patch_rtw89.py
 scripts/               patch_rtw89.py, build_module.sh, dkms_prepare.sh, dkms_pre_build.sh,
                        prepare_submission.sh, verify_hardware.py, verify_monitor_diag.py

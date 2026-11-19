@@ -1,4 +1,4 @@
-# rtw89: исправления режима монитора и инъекции кадров (`PATCH v7`)
+# rtw89: исправления режима монитора и инъекции кадров (`PATCH v8`)
 
 [![CI](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml/badge.svg)](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml)
 [![License: GPL-2.0 OR BSD-3-Clause](https://img.shields.io/badge/License-GPL--2.0%20OR%20BSD--3--Clause-blue.svg)](LICENSE)
@@ -17,13 +17,13 @@ monitor-интерфейсе, и восстанавливают рабочий �
 
 | | |
 | :--- | :--- |
-| Текущая серия | [`patches/v7/`](patches/v7/), 5 патчей (`[PATCH rtw-next v7]`, `+42/-4`), база `pkshih/rtw.git` `rtw-next` [`0bdc579dbfc2`](https://github.com/pkshih/rtw/commit/0bdc579dbfc251a6b6838ee9459b6771b948c617) (Linux 7.4-rc1) |
-| Рассылка | [`[PATCH rtw-next v7 0/5]`](https://lore.kernel.org/linux-wireless/20261118180435.904-1-owner@ph4ntom-rev.uz/) отправлена в `linux-wireless` (2026-11-18); заменяет [v6](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/) и [v5](https://lore.kernel.org/linux-wireless/20261113235211.1911-1-owner@ph4ntom-rev.uz/). |
+| Текущая серия | [`patches/v8/`](patches/v8/), 5 патчей (`[PATCH rtw-next v8]`, `+42/-4`; патчи 1–4 `Acked-by: Ping-Ke Shih`, патч 3 `Reviewed-by: Zong-Zhe Yang`), база `pkshih/rtw.git` `rtw-next` [`0bdc579dbfc2`](https://github.com/pkshih/rtw/commit/0bdc579dbfc251a6b6838ee9459b6771b948c617) (Linux 7.4-rc1) |
+| Рассылка | [`[PATCH rtw-next v8 0/5]`](https://lore.kernel.org/linux-wireless/20261119080328.391-1-owner@ph4ntom-rev.uz/) отправлена в `linux-wireless` (2026-11-19); заменяет [v7](https://lore.kernel.org/linux-wireless/20261118180435.904-1-owner@ph4ntom-rev.uz/) и [v6](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/). |
 | Сборка и статика | Каждый патч собирается отдельно; `W=1` и sparse (`C=1`) с `CONFIG_PROVE_LOCKING=y` дают `0` новых предупреждений; `checkpatch.pl --strict` — `0` ошибок/предупреждений; `patch_rtw89.py` проверяется на `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2) и `v7.4-rc1` с реальной Kbuild-сборкой `make W=1 C=1 modules` на LTS `v6.6`, `v6.12`, `v6.18` и `v7.4-rc1` в [CI](.github/workflows/ci.yml). |
 | Проверка на железе | **RTL8852AE** (`10ec:8852`, прошивка `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — верифицирована в IDA Pro 9.5 и протестирована вживую через `tracefs`/kprobes + `verify_hardware.py` (`PASS`), см. [отчёт и скриншоты](docs/PREFLIGHT_VALIDATION.md). |
 | Не проверено на железе | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB-адаптеры, DBCC. |
 
-## Серия v7
+## Серия v8
 
 | # | Патч | Тип |
 | :-- | :--- | :--- |
@@ -35,7 +35,7 @@ monitor-интерфейсе, и восстанавливают рабочий �
 
 Подробное описание каждого патча, out-of-tree слоя `rtw89_mon`, логов и скриншотов приведено в
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-[cover letter](patches/v7/v7-0000-cover-letter.patch) и
+[cover letter](patches/v8/v8-0000-cover-letter.patch) и
 [docs/PREFLIGHT_VALIDATION.md](docs/PREFLIGHT_VALIDATION.md).
 
 ![Сводка аппаратной валидации на RTL8852AE](docs/evidence/screenshots/04_hardware_validation_summary.png)
@@ -55,7 +55,7 @@ monitor-интерфейсе, и восстанавливают рабочий �
 
 ```bash
 cd linux
-git am /path/to/rtw89-monitor-injection/patches/v5/v5-00*-wifi-*.patch
+git am /path/to/rtw89-monitor-injection/patches/v8/v8-00*-wifi-*.patch
 ```
 
 Локальная предпроверка серии перед отправкой (`checkpatch.pl --strict`, проверка тегов и

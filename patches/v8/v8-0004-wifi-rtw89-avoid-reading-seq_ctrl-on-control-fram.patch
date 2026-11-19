@@ -1,0 +1,38 @@
+From a8f709a10abc3eaecf37706464b8644b7464b587 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Thu, 19 Nov 2026 13:04:00 +0500
+Subject: [PATCH rtw-next v8 4/5] wifi: rtw89: avoid reading seq_ctrl on
+ control frames
+
+Injected 802.11 control frames such as 10-byte ACK/CTS or 16-byte RTS
+do not carry a sequence control field and are shorter than a 24-byte
+3-address header.
+
+Set seq to 0 for control frames instead of reading hdr->seq_ctrl.
+
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+Acked-by: Ping-Ke Shih <pkshih@realtek.com>
+---
+ drivers/net/wireless/realtek/rtw89/core.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
+index 8333b26..3d1fed6 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.c
++++ b/drivers/net/wireless/realtek/rtw89/core.c
+@@ -1317,7 +1317,11 @@ rtw89_core_tx_update_desc_info(struct rtw89_dev *rtwdev,
+ 	else if (tx_req->vif)
+ 		desc_info->mlo = ieee80211_vif_is_mld(tx_req->vif);
+ 
+-	seq = (le16_to_cpu(hdr->seq_ctrl) & IEEE80211_SCTL_SEQ) >> 4;
++	if (ieee80211_is_ctl(hdr->frame_control))
++		seq = 0;
++	else
++		seq = (le16_to_cpu(hdr->seq_ctrl) & IEEE80211_SCTL_SEQ) >> 4;
++
+ 	addr_cam = rtw89_get_addr_cam_of(tx_req->rtwvif_link,
+ 					 tx_req->rtwsta_link);
+ 	if (addr_cam->valid && desc_info->mlo)
+-- 
+2.56.0.windows.4
+

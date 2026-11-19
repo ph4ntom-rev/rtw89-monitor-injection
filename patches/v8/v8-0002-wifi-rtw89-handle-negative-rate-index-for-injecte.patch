@@ -1,0 +1,39 @@
+From 6d309e3fa27945852b1fc250c305e88e6a524a9d Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Thu, 19 Nov 2026 13:02:00 +0500
+Subject: [PATCH rtw-next v8 2/5] wifi: rtw89: handle negative rate index for
+ injected frames
+
+When user space injects a frame with a radiotap rate that is not
+supported on the current band (for example 1 Mbps CCK on 5 GHz),
+mac80211 sets the rate index to -1. Storing that index in an unsigned
+byte turns it into 0xff and programs an invalid hardware rate into the
+TX descriptor.
+
+Clamp negative rate indices to 0 so the lowest valid band rate (1 Mbps
+on 2.4 GHz, 6 Mbps on 5/6 GHz) is selected.
+
+Fixes: e96abe4fd7cd ("wifi: rtw89: consider data rate/bandwidth/GI for injected packets")
+Cc: stable@vger.kernel.org
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+Acked-by: Ping-Ke Shih <pkshih@realtek.com>
+---
+ drivers/net/wireless/realtek/rtw89/core.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
+index 1e8b60e..37ff745 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.c
++++ b/drivers/net/wireless/realtek/rtw89/core.c
+@@ -1259,7 +1259,7 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
+ 	enum mac80211_rate_control_flags flags = info->control.rates[0].flags;
+ 	struct rtw89_tx_desc_info *desc_info = &tx_req->desc_info;
+ 	const struct rtw89_chan *chan;
+-	u8 idx = info->control.rates[0].idx;
++	u8 idx = max_t(s8, info->control.rates[0].idx, 0);
+ 	u8 nss, mcs;
+ 
+ 	desc_info->use_rate = true;
+-- 
+2.56.0.windows.4
+

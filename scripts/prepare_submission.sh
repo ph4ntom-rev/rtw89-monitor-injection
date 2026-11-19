@@ -4,7 +4,7 @@
 # prepare_submission.sh
 #
 # Read-only preflight validator for the upstream rtw89 PATCH series in
-# patches/v7/. Verifies cover-letter completeness, patch count, author /
+# patches/v8/. Verifies cover-letter completeness, patch count, author /
 # Signed-off-by / Fixes / stable tags, absence of out-of-tree markers or CRLF
 # line endings, and (when --kernel-dir is supplied) checkpatch.pl --strict.
 #
@@ -16,7 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-SERIES_DIR="${REPO_ROOT}/patches/v7"
+SERIES_DIR="${REPO_ROOT}/patches/v8"
 KERNEL_DIR=""
 
 usage() {
@@ -24,7 +24,7 @@ usage() {
 Usage: $(basename "$0") [options]
 
 Options:
-  --series-dir <path>   Patch series directory (default: patches/v7)
+  --series-dir <path>   Patch series directory (default: patches/v8)
   --kernel-dir <path>   Optional Linux kernel source tree for checkpatch.pl / get_maintainer.pl
   -h, --help            Show this help message
 EOF
@@ -57,7 +57,7 @@ done
 echo "=== rtw89 Upstream Submission Preflight (Read-Only, No Mail Sent) ==="
 echo "  Series directory : ${SERIES_DIR}"
 
-cover="${SERIES_DIR}/v7-0000-cover-letter.patch"
+cover="${SERIES_DIR}/v8-0000-cover-letter.patch"
 if [[ ! -f "${cover}" ]]; then
     echo "[FAIL] Missing cover letter: ${cover}" >&2
     exit 1
@@ -74,7 +74,7 @@ if ! grep -q '^base-commit: [0-9a-f]\{40\}$' "${cover}"; then
 fi
 
 shopt -s nullglob
-patches=("${SERIES_DIR}"/v7-00*-wifi-*.patch)
+patches=("${SERIES_DIR}"/v8-00*-wifi-*.patch)
 shopt -u nullglob
 
 count="${#patches[@]}"
@@ -99,8 +99,8 @@ for p in "${cover}" "${patches[@]}"; do
         echo "[FAIL] Missing canonical From: header in ${bname}" >&2
         exit 1
     fi
-    if ! grep -q '^Subject: \[PATCH rtw-next v7 [0-5]/5\] wifi: rtw89:' "${p}"; then
-        echo "[FAIL] Missing canonical [PATCH rtw-next v7 X/5] Subject prefix in ${bname}" >&2
+    if ! grep -q '^Subject: \[PATCH rtw-next v8 [0-5]/5\] wifi: rtw89:' "${p}"; then
+        echo "[FAIL] Missing canonical [PATCH rtw-next v8 X/5] Subject prefix in ${bname}" >&2
         exit 1
     fi
     if [[ "${idx}" -gt 0 ]]; then
@@ -156,5 +156,5 @@ When ready for manual dry-run inspection in the future, run:
     --to="Ping-Ke Shih <pkshih@realtek.com>" \\
     --cc="linux-wireless@vger.kernel.org" \\
     --cc="linux-kernel@vger.kernel.org" \\
-    ${SERIES_DIR}/v7-*.patch
+    ${SERIES_DIR}/v8-*.patch
 EOF

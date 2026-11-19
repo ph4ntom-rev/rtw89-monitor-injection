@@ -725,6 +725,31 @@ class PatchRtw89TestCase(unittest.TestCase):
             if idx in (1, 2):
                 self.assertIn("Cc: stable@vger.kernel.org", content)
 
+    def test_v8_patch_series_metadata_and_hygiene(self):
+        v8_dir = REPO_ROOT / "patches" / "v8"
+        self.assertTrue(v8_dir.is_dir(), "patches/v8 directory missing")
+        patches = sorted(v8_dir.glob("v8-000[0-5]-*.patch"))
+        self.assertEqual(len(patches), 6, "Expected cover letter + 5 patches in patches/v8/")
+
+        cover = patches[0].read_text(encoding="utf-8")
+        self.assertIn("Subject: [PATCH rtw-next v8 0/5] wifi: rtw89:", cover)
+        self.assertIn("base-commit: 0bdc579dbfc251a6b6838ee9459b6771b948c617", cover)
+        self.assertNotIn("\r\n", cover)
+
+        for idx, p in enumerate(patches[1:], 1):
+            content = p.read_text(encoding="utf-8")
+            self.assertTrue(content.startswith("From "), f"Missing mbox From line in {p.name}")
+            self.assertIn("From: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
+            self.assertIn(f"Subject: [PATCH rtw-next v8 {idx}/5]", content)
+            self.assertIn("Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
+            self.assertNotIn("\r\n", content, f"CRLF line endings in {p.name}")
+            if idx in (1, 2):
+                self.assertIn("Cc: stable@vger.kernel.org", content)
+            if idx in (1, 2, 3, 4):
+                self.assertIn("Acked-by: Ping-Ke Shih <pkshih@realtek.com>", content)
+            if idx == 3:
+                self.assertIn("Reviewed-by: Zong-Zhe Yang <kevin_yang@realtek.com>", content)
+
     def test_v7_patch_series_metadata_and_hygiene(self):
         v7_dir = REPO_ROOT / "patches" / "v7"
         self.assertTrue(v7_dir.is_dir(), "patches/v7 directory missing")

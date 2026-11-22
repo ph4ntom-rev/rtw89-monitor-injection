@@ -1,6 +1,7 @@
-# rtw89: исправления режима монитора и инъекции кадров (`PATCH v8`)
+# rtw89: исправления режима монитора и инъекции кадров (Принято в `rtw-next`)
 
 [![CI](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml/badge.svg)](https://github.com/ph4ntom-rev/rtw89-monitor-injection/actions/workflows/ci.yml)
+[![Upstream: Merged in rtw-next](https://img.shields.io/badge/Upstream-Merged%20in%20rtw--next-brightgreen.svg)](https://lore.kernel.org/linux-wireless/63269466-8c67-461e-a29b-f64bb0d47f6a@RTKEXHMBS05.realtek.com.tw/)
 [![License: GPL-2.0 OR BSD-3-Clause](https://img.shields.io/badge/License-GPL--2.0%20OR%20BSD--3--Clause-blue.svg)](LICENSE)
 
 **[English](README.md) | [Русский](README_RU.md) | [Архитектура](docs/ARCHITECTURE.md) | [Проверка и доказательства](docs/PREFLIGHT_VALIDATION.md)**
@@ -17,21 +18,21 @@ monitor-интерфейсе, и восстанавливают рабочий �
 
 | | |
 | :--- | :--- |
-| Текущая серия | [`patches/v8/`](patches/v8/), 5 патчей (`[PATCH rtw-next v8]`, `+42/-4`; **все 5/5 `Acked-by: Ping-Ke Shih`**, патч 3 `Reviewed-by: Zong-Zhe Yang`), база `pkshih/rtw.git` `rtw-next` [`0bdc579dbfc2`](https://github.com/pkshih/rtw/commit/0bdc579dbfc251a6b6838ee9459b6771b948c617) (Linux 7.4-rc1) |
-| Рассылка | [`[PATCH rtw-next v8 0/5]`](https://lore.kernel.org/linux-wireless/20261119080328.391-1-owner@ph4ntom-rev.uz/) отправлена в `linux-wireless` (2026-11-19; [финальный 5/5 Acked-by](https://lore.kernel.org/linux-wireless/077a0d609e3c4cebabe6b1be5aa9eb09@realtek.com/)); заменяет [v7](https://lore.kernel.org/linux-wireless/20261118180435.904-1-owner@ph4ntom-rev.uz/) и [v6](https://lore.kernel.org/linux-wireless/20261117094135.1772-1-owner@ph4ntom-rev.uz/). |
+| Статус в апстриме | **Смержено в `pkshih/rtw.git` `rtw-next`** (2026-11-22, [уведомление в lore](https://lore.kernel.org/linux-wireless/63269466-8c67-461e-a29b-f64bb0d47f6a@RTKEXHMBS05.realtek.com.tw/)): коммиты [`0202cb50fe9f`](https://github.com/pkshih/rtw/commit/0202cb50fe9fba862bd1cbc8079b56c9b29a2c4f)..[`92608bb5f14f`](https://github.com/pkshih/rtw/commit/92608bb5f14f4c6f18c987055c5dfd51771ea51d) (`+42/-4`). |
+| Рассылка | [`[PATCH rtw-next v8 0/5]`](https://lore.kernel.org/linux-wireless/20261119080328.391-1-owner@ph4ntom-rev.uz/) (`5/5 Acked-by: Ping-Ke Shih`, `3/5 Reviewed-by: Zong-Zhe Yang`); локальные патчи в [`patches/v8/`](patches/v8/) поверх [`0bdc579dbfc2`](https://github.com/pkshih/rtw/commit/0bdc579dbfc251a6b6838ee9459b6771b948c617). |
 | Сборка и статика | Каждый патч собирается отдельно; `W=1` и sparse (`C=1`) с `CONFIG_PROVE_LOCKING=y` дают `0` новых предупреждений; `checkpatch.pl --strict` — `0` ошибок/предупреждений; `patch_rtw89.py` проверяется на `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2) и `v7.4-rc1` с реальной Kbuild-сборкой `make W=1 C=1 modules` на LTS `v6.6`, `v6.12`, `v6.18` и `v7.4-rc1` в [CI](.github/workflows/ci.yml). |
 | Проверка на железе | **RTL8852AE** (`10ec:8852`, прошивка `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — верифицирована в IDA Pro 9.5 и протестирована вживую через `tracefs`/kprobes + `verify_hardware.py` (`PASS`), см. [отчёт и скриншоты](docs/PREFLIGHT_VALIDATION.md). |
 | Не проверено на железе | RTL8852B/C/BT, RTL8851B, RTL8922A/D (Wi-Fi 7), USB-адаптеры, DBCC. |
 
 ## Серия v8
 
-| # | Патч | Тип |
-| :-- | :--- | :--- |
-| 1 | `wifi: rtw89: avoid NULL vif dereference in rtw89_ops_tx()` | исправление (`vif_to_rtwvif_safe()`), `Fixes:` + `Cc: stable` |
-| 2 | `wifi: rtw89: handle negative rate index for injected frames` | исправление (`max_t(s8, ..., 0)`), `Fixes:` + `Cc: stable` |
-| 3 | `wifi: rtw89: restore channel when leaving idle on non-chanctx devices` | исправление (`rtwdev->support_chanctx` + `CONF_CHANGE_CHANNEL`) |
-| 4 | `wifi: rtw89: avoid reading seq_ctrl on control frames` | исправление (`ieee80211_is_ctl()`) |
-| 5 | `wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for injected frames` | инъекция (`!ASSIGN_SEQ`, `NO_ACK`, `max_rate_tries = 63`) |
+| # | Коммит (`rtw-next`) | Патч | Тип |
+| :-- | :--- | :--- | :--- |
+| 1 | [`0202cb50fe9f`](https://github.com/pkshih/rtw/commit/0202cb50fe9fba862bd1cbc8079b56c9b29a2c4f) | `wifi: rtw89: avoid NULL vif dereference in rtw89_ops_tx()` | исправление (`vif_to_rtwvif_safe()`), `Fixes:` + `Cc: stable` |
+| 2 | [`260247bfbc5b`](https://github.com/pkshih/rtw/commit/260247bfbc5ba536ab889eb04e31aa3b990ac2bc) | `wifi: rtw89: handle negative rate index for injected frames` | исправление (`max_t(s8, ..., 0)`), `Fixes:` + `Cc: stable` |
+| 3 | [`e07c9af7bbc8`](https://github.com/pkshih/rtw/commit/e07c9af7bbc877a819f11750eb899b4abe271aeb) | `wifi: rtw89: restore channel when leaving idle on non-chanctx devices` | исправление (`rtwdev->support_chanctx` + `CONF_CHANGE_CHANNEL`) |
+| 4 | [`4175fc84dbe9`](https://github.com/pkshih/rtw/commit/4175fc84dbe9680c7a4ab18aa7fa48b7e3bdede1) | `wifi: rtw89: avoid reading seq_ctrl on control frames` | исправление (`ieee80211_is_ctl()`) |
+| 5 | [`92608bb5f14f`](https://github.com/pkshih/rtw/commit/92608bb5f14f4c6f18c987055c5dfd51771ea51d) | `wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for injected frames` | инъекция (`!ASSIGN_SEQ`, `NO_ACK`, `max_rate_tries = 63`) |
 
 Подробное описание каждого патча, out-of-tree слоя `rtw89_mon`, логов и скриншотов приведено в
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),

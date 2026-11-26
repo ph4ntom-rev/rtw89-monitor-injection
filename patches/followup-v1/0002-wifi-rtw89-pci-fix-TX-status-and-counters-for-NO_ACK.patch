@@ -1,0 +1,51 @@
+From bf946659f4cfa3b19146e26a40f47dffaa5c1872 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Thu, 26 Nov 2026 13:17:01 +0500
+Subject: [PATCH rtw-next 2/2] wifi: rtw89: pci: fix TX status and counters for
+ NO_ACK frames
+
+In rtw89_pci_tx_status(), IEEE80211_TX_STAT_NOACK_TRANSMITTED is set
+unconditionally whenever IEEE80211_TX_CTL_NO_ACK is present, even when
+the frame was dropped (RTW89_TX_MACID_DROP or RTW89_TX_LIFE_TIME)
+without being transmitted. In addition, when a NO_ACK frame completes
+with RTW89_TX_DONE (broadcast, QoS No-Ack, or Wi-Fi 7 BE NO_ACK), the
+subsequent RTW89_TX_DONE branch also sets IEEE80211_TX_STAT_ACK and
+increments tx_ring->tx_acked, whereas unacknowledged Wi-Fi 6 AX unicast
+NO_ACK frames (tx_cnt_lmt = 1) complete with RTW89_TX_RETRY_LIMIT and
+fall into the failure path.
+
+Clear stale TX status bits and set IEEE80211_TX_STAT_NOACK_TRANSMITTED
+exclusively when a NO_ACK frame completes with RTW89_TX_DONE or
+RTW89_TX_RETRY_LIMIT, reserving IEEE80211_TX_STAT_ACK and
+tx_ring->tx_acked for non-NO_ACK completions while still accounting
+RTW89_TX_LIFE_TIME and RTW89_TX_MACID_DROP as failures.
+
+Fixes: e3ec7017f6a2 ("rtw89: add Realtek 802.11ax driver")
+Cc: stable@vger.kernel.org
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/pci.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/pci.c b/drivers/net/wireless/realtek/rtw89/pci.c
+index 76523d057..2204ed8c5 100644
+--- a/drivers/net/wireless/realtek/rtw89/pci.c
++++ b/drivers/net/wireless/realtek/rtw89/pci.c
+@@ -470,9 +470,12 @@ static void rtw89_pci_tx_status(struct rtw89_dev *rtwdev,
+ 	info = IEEE80211_SKB_CB(skb);
+ 	ieee80211_tx_info_clear_status(info);
+ 
+-	if (info->flags & IEEE80211_TX_CTL_NO_ACK)
++	info->flags &= ~(IEEE80211_TX_STAT_NOACK_TRANSMITTED |
++			 IEEE80211_TX_STAT_ACK);
++	if ((info->flags & IEEE80211_TX_CTL_NO_ACK) &&
++	    (tx_status == RTW89_TX_DONE || tx_status == RTW89_TX_RETRY_LIMIT)) {
+ 		info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
+-	if (tx_status == RTW89_TX_DONE) {
++	} else if (tx_status == RTW89_TX_DONE) {
+ 		info->flags |= IEEE80211_TX_STAT_ACK;
+ 		tx_ring->tx_acked++;
+ 	} else {
+-- 
+2.53.0
+

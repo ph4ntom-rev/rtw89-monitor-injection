@@ -1,0 +1,44 @@
+From bf946659f4cfa3b19146e26a40f47dffaa5c1872 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Thu, 26 Nov 2026 13:21:28 +0500
+Subject: [PATCH rtw-next 0/2] wifi: rtw89: fix injected retry limit and NO_ACK TX status
+
+This two-patch series fixes three follow-up issues in commit
+92608bb5f14f ("wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for
+injected frames") reported by Luka Gejak and Ahmet Zeren during the
+rtw88 injection review, along with the matching pre-existing NO_ACK TX
+status issue on the PCIe completion path.
+
+Patch 1 gates the per-packet retry override in
+rtw89_core_tx_update_injection() on IEEE80211_TX_CTRL_RATE_INJECT, caps
+hw->max_rate_tries at IEEE80211_MAX_TX_RETRY (31) so the 5-bit
+ieee80211_tx_rate::count field does not wrap around, and makes
+IEEE80211_TX_STAT_NOACK_TRANSMITTED and IEEE80211_TX_STAT_ACK mutually
+exclusive in rtw89_tx_rpt_tx_status() while accounting for Wi-Fi 6 AX
+unicast NO_ACK completions (RTW89_TX_RETRY_LIMIT with tx_cnt_lmt = 1)
+and excluding dropped frames (RTW89_TX_MACID_DROP / RTW89_TX_LIFE_TIME).
+
+Patch 2 applies the same NO_ACK TX status and ring counter handling to
+rtw89_pci_tx_status() in pci.c, which handles TX completions on PCIe
+devices.
+
+Tested on RTL8852AE (10ec:8852, firmware 0.13.36.2) at 5 GHz using
+raw radiotap injection, tracefs kprobes, and hardware RPP completion
+telemetry across supported/unsupported radiotap rates, retry counts
+0..32, and broadcast, QoS No-Ack, and unicast NO_ACK frames.
+
+Enver Ikromov (2):
+  wifi: rtw89: fix retry limit and NO_ACK status for injected frames
+  wifi: rtw89: pci: fix TX status and counters for NO_ACK frames
+
+ drivers/net/wireless/realtek/rtw89/core.c |  5 +++--
+ drivers/net/wireless/realtek/rtw89/core.h |  1 -
+ drivers/net/wireless/realtek/rtw89/mac.h  | 13 ++++++++-----
+ drivers/net/wireless/realtek/rtw89/pci.c  |  7 +++++--
+ 4 files changed, 16 insertions(+), 10 deletions(-)
+
+
+base-commit: 18d0bedbb5f0538396cb7f763ed9cd1dd69c5b23
+-- 
+2.53.0
+

@@ -109,9 +109,10 @@ transmission.
   `rtw89_traffic_stats_accu()`, `rtw89_wow_parse_akm()`, `rtw89_core_tx_btc_spec_pkt_notify()`,
   `rtw89_core_tx_update_he_qos_htc()`, and `rtw89_core_tx_update_ampdu_info()`.
 - **Patch 9:**
-  - Sets `hw->max_rate_tries = 63` (`6`-bit `DATA_TXCNT_LMT` ceiling; mac80211 otherwise
-    clamps `rates[0].count` to `1` when `max_rate_tries == 0`, silently discarding
-    `IEEE80211_RADIOTAP_DATA_RETRIES`).
+  - Sets `hw->max_rate_tries = IEEE80211_MAX_TX_RETRY` (`31`, matching the 5-bit
+    `struct ieee80211_tx_rate::count` bitfield ceiling in `mac80211`; `mac80211` otherwise
+    clamps `rates[0].count` to `1` when `max_rate_tries == 0`, whereas values above `31`
+    overflow `u16 count:5`).
   - Clamps positive radiotap HT/VHT/legacy rate indices to hardware limits (`umin`).
   - Disables `upd_wlan_hdr`, `hw_ssn_sel`, and `hw_seq_mode` whenever
     `!(info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ) || ieee80211_is_ctl(hdr->frame_control)`,
@@ -120,11 +121,14 @@ transmission.
   - Clears `hw_rts_en` on injected frames while gating `rts_en` on
     `IEEE80211_TX_RC_USE_RTS_CTS && !is_bmc && !NO_ACK`.
   - Programs `tx_cnt_lmt = 1` on `IEEE80211_TX_CTL_NO_ACK` (plus `BE_TXD_BODY6_NO_ACK` on
-    Wi-Fi 7 BE) or `umin(rates[0].count, 63)` when `NO_ACK` is clear. Because AX TXWD v0
-    lacks a per-packet `NO_ACK` bit and reports `RTW89_TX_RETRY_LIMIT` in PCIe RPP / USB
-    TXRPT completions after the single unacknowledged transmission, sets
-    `IEEE80211_TX_STAT_NOACK_TRANSMITTED` (`mac.h` / `pci.c`) and suppresses false
-    `tx_ring->tx_retry_lmt` increments on `NO_ACK` frames.
+    Wi-Fi 7 BE) or `umin(rates[0].count, IEEE80211_MAX_TX_RETRY)` when `NO_ACK` is clear and
+    `IEEE80211_TX_CTRL_RATE_INJECT` is set. Because AX TXWD v0 lacks a per-packet `NO_ACK`
+    bit and reports `RTW89_TX_RETRY_LIMIT` on unacknowledged unicast `NO_ACK` frames (and
+    `RTW89_TX_DONE` on broadcast / QoS No-Ack / BE `NO_ACK`), sets
+    `IEEE80211_TX_STAT_NOACK_TRANSMITTED` (`mac.h` / `pci.c`) exclusively (without
+    `IEEE80211_TX_STAT_ACK` or `tx_ring->tx_acked++`) on `RTW89_TX_DONE` /
+    `RTW89_TX_RETRY_LIMIT`, and suppresses false `tx_ring->tx_retry_lmt` increments while
+    leaving dropped frames (`RTW89_TX_LIFE_TIME` / `RTW89_TX_MACID_DROP`) unmarked.
 
 ## 7. Channel restoration when leaving idle on non-chanctx devices (patch 10)
 

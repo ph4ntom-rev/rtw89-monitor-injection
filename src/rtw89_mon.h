@@ -86,7 +86,11 @@
 #define RTW89_MON_HAS_PHYSTS_INIT 0
 #endif
 
-#define RTW89_MON_MAX_RATE_TRIES 0x3f
+#ifdef IEEE80211_MAX_TX_RETRY
+#define RTW89_MON_MAX_RATE_TRIES IEEE80211_MAX_TX_RETRY
+#else
+#define RTW89_MON_MAX_RATE_TRIES 31
+#endif
 
 void rtw89_mon_register_hw_caps(struct rtw89_dev *rtwdev);
 

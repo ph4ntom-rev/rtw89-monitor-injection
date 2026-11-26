@@ -24,12 +24,13 @@
  * 3. Firmware Role & Injection Descriptor Handling (PATCH v5 2/10, 5/10, 7/10-9/10):
  *    Ensures NL80211_IFTYPE_MONITOR uses RTW89_NET_TYPE_NO_LINK and
  *    RTW89_SELF_ROLE_AP, routes non-Data frames (including 10-16B Control
- *    frames) via RTW89_CORE_TX_TYPE_MGMT, advertises hw->max_rate_tries = 63,
- *    handles negative and out-of-range rate indices across AX and Wi-Fi 7 BE
- *    chips, disables hardware sequence generation unless
- *    IEEE80211_TX_CTL_ASSIGN_SEQ is set on a non-control frame, gates
- *    RTS/HW_RTS on IEEE80211_TX_RC_USE_RTS_CTS, and honors
- *    IEEE80211_TX_CTL_NO_ACK and IEEE80211_RADIOTAP_DATA_RETRIES.
+ *    frames) via RTW89_CORE_TX_TYPE_MGMT, advertises hw->max_rate_tries =
+ *    IEEE80211_MAX_TX_RETRY (31), handles negative and out-of-range rate
+ *    indices across AX and Wi-Fi 7 BE chips, disables hardware sequence
+ *    generation unless IEEE80211_TX_CTL_ASSIGN_SEQ is set on a non-control
+ *    frame, gates RTS/HW_RTS on IEEE80211_TX_RC_USE_RTS_CTS, and honors
+ *    IEEE80211_TX_CTL_NO_ACK and IEEE80211_RADIOTAP_DATA_RETRIES (when
+ *    IEEE80211_TX_CTRL_RATE_INJECT is set).
  *
  * 4. Idle / Monitor Channel Restoration (PATCH v5 10/10):
  *    Restores hw->conf.chandef when leaving idle or toggling monitor mode when
@@ -688,10 +689,14 @@ void rtw89_mon_fixup_tx_desc(struct rtw89_dev *rtwdev,
 #endif
 		desc_info->tx_cnt_lmt_en = true;
 		desc_info->tx_cnt_lmt = 1;
-	} else if (info->control.rates[0].count) {
+	} else if ((info->control.flags & IEEE80211_TX_CTRL_RATE_INJECT) &&
+		   info->control.rates[0].count) {
 		desc_info->tx_cnt_lmt_en = true;
 		desc_info->tx_cnt_lmt = min_t(u8, info->control.rates[0].count,
 					      RTW89_MON_MAX_RATE_TRIES);
+	} else {
+		desc_info->tx_cnt_lmt_en = false;
+		desc_info->tx_cnt_lmt = 0;
 	}
 
 	/*

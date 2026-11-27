@@ -1,0 +1,32 @@
+From 80efa6ffdb3850b560effa3dc9ec870ca5704089 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Fri, 27 Nov 2026 13:30:42 +0500
+Subject: [PATCH rtw-next v2 0/2] wifi: rtw89: fix injected retry limit and NO_ACK TX status
+
+Follow-up fixes for injected retry handling and NO_ACK TX status reporting
+in rtw89, tested on RTL8852AE.
+
+Changes in v2:
+- Patch 1: reword commit message, keep RTW89_TX_DATA_CNT_LMT_MAX and use
+  min() with IEEE80211_MAX_TX_RETRY, drop extra parentheses around '&',
+  and drop unnecessary flag clearing in rtw89_tx_rpt_tx_status().
+- Patch 2: keep pci tx_ring counters unchanged, skip TX failure debug log
+  when NOACK_TRANSMITTED is set, drop unnecessary flag clearing, drop
+  Fixes/Cc: stable tags, and reword commit message.
+
+v1: https://lore.kernel.org/linux-wireless/20261126083141.1470-1-owner@ph4ntom-rev.uz/
+
+Enver Ikromov (2):
+  wifi: rtw89: fix retry limit and NO_ACK status for injected frames
+  wifi: rtw89: pci: fix NO_ACK TX status reporting
+
+ drivers/net/wireless/realtek/rtw89/core.c |  5 +++--
+ drivers/net/wireless/realtek/rtw89/mac.h  | 11 ++++++-----
+ drivers/net/wireless/realtek/rtw89/pci.c  | 12 ++++++++----
+ 3 files changed, 17 insertions(+), 11 deletions(-)
+
+
+base-commit: 18d0bedbb5f0538396cb7f763ed9cd1dd69c5b23
+-- 
+2.53.0
+

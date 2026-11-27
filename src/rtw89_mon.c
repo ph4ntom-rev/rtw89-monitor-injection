@@ -689,7 +689,7 @@ void rtw89_mon_fixup_tx_desc(struct rtw89_dev *rtwdev,
 #endif
 		desc_info->tx_cnt_lmt_en = true;
 		desc_info->tx_cnt_lmt = 1;
-	} else if ((info->control.flags & IEEE80211_TX_CTRL_RATE_INJECT) &&
+	} else if (info->control.flags & IEEE80211_TX_CTRL_RATE_INJECT &&
 		   info->control.rates[0].count) {
 		desc_info->tx_cnt_lmt_en = true;
 		desc_info->tx_cnt_lmt = min_t(u8, info->control.rates[0].count,

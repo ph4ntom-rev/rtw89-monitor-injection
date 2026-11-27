@@ -779,6 +779,43 @@ class PatchRtw89TestCase(unittest.TestCase):
                 self.assertIn('Fixes: e3ec7017f6a2 ("rtw89: add Realtek 802.11ax driver")', content)
                 self.assertIn("Cc: stable@vger.kernel.org", content)
 
+    def test_followup_v2_patch_series_metadata_and_hygiene(self):
+        fu2_dir = REPO_ROOT / "patches" / "followup-v2"
+        self.assertTrue(fu2_dir.is_dir(), "patches/followup-v2 directory missing")
+        patches = sorted(fu2_dir.glob("v2-000[0-2]-*.patch"))
+        self.assertEqual(len(patches), 3, "Expected cover letter + 2 patches in patches/followup-v2/")
+
+        cover = patches[0].read_text(encoding="utf-8")
+        self.assertIn("Subject: [PATCH rtw-next v2 0/2] wifi: rtw89:", cover)
+        self.assertIn("Changes in v2:", cover)
+        self.assertIn("v1: https://lore.kernel.org/linux-wireless/20261126083141.1470-1-owner@ph4ntom-rev.uz/", cover)
+        self.assertIn("base-commit: 18d0bedbb5f0538396cb7f763ed9cd1dd69c5b23", cover)
+        self.assertNotIn("\r\n", cover)
+        self.assertNotIn("RTW89_MON_EXT", cover)
+
+        for idx, p in enumerate(patches[1:], 1):
+            content = p.read_text(encoding="utf-8")
+            self.assertTrue(content.startswith("From "), f"Missing mbox From line in {p.name}")
+            self.assertIn("From: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
+            self.assertIn(f"Subject: [PATCH rtw-next v2 {idx}/2] wifi: rtw89:", content)
+            self.assertIn("Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>", content)
+            self.assertNotIn("\r\n", content, f"CRLF line endings in {p.name}")
+            self.assertNotIn("RTW89_MON_EXT", content)
+            self.assertNotIn("~(IEEE80211_TX_STAT_NOACK_TRANSMITTED", content)
+            if idx == 1:
+                self.assertIn('Fixes: 92608bb5f14f ("wifi: rtw89:', content)
+                self.assertIn("Reported-by: Luka Gejak <luka.gejak@linux.dev>", content)
+                self.assertIn("Reported-by: Ahmet Zeren <niko3x@proton.me>", content)
+                self.assertEqual(content.count("Closes: https://lore.kernel.org/linux-wireless/"), 2)
+                self.assertIn("info->control.flags & IEEE80211_TX_CTRL_RATE_INJECT &&", content)
+                self.assertNotIn("(info->control.flags & IEEE80211_TX_CTRL_RATE_INJECT)", content)
+                self.assertIn("min(RTW89_TX_DATA_CNT_LMT_MAX, IEEE80211_MAX_TX_RETRY)", content)
+            if idx == 2:
+                self.assertNotIn("Fixes:", content)
+                self.assertNotIn("Cc: stable@vger.kernel.org", content)
+                self.assertIn("tx_ring->tx_acked++;", content)
+                self.assertIn("else if (info->flags & IEEE80211_TX_CTL_REQ_TX_STATUS)", content)
+
     def test_v7_patch_series_metadata_and_hygiene(self):
         v7_dir = REPO_ROOT / "patches" / "v7"
         self.assertTrue(v7_dir.is_dir(), "patches/v7 directory missing")
@@ -936,6 +973,8 @@ class PatchRtw89TestCase(unittest.TestCase):
             "\t\tinfo->flags |= IEEE80211_TX_STAT_ACK;\n"
             "\t\ttx_ring->tx_acked++;\n"
             "\t} else {\n"
+            "\t\tif (info->flags & IEEE80211_TX_CTL_REQ_TX_STATUS)\n"
+            "\t\t\trtw89_debug(rtwdev, RTW89_DBG_FW, \"failed %x\\n\", tx_status);\n"
             "\t\ttx_ring->tx_retry_lmt++;\n"
             "\t}\n"
             "}\n"
@@ -981,13 +1020,14 @@ class PatchRtw89TestCase(unittest.TestCase):
             self.assertIn("IEEE80211_TX_STAT_NOACK_TRANSMITTED", patched_mac_h)
             self.assertIn("tx_status == RTW89_TX_RETRY_LIMIT", patched_mac_h)
             self.assertIn("} else if (tx_status == RTW89_TX_DONE) {", patched_mac_h)
-            self.assertIn("tx_status == RTW89_TX_DONE || tx_status == RTW89_TX_RETRY_LIMIT", patched_pci_c)
-            self.assertIn("} else if (tx_status == RTW89_TX_DONE) {", patched_pci_c)
+            self.assertNotIn("~(IEEE80211_TX_STAT_NOACK_TRANSMITTED", patched_mac_h)
+            self.assertIn("tx_status == RTW89_TX_RETRY_LIMIT", patched_pci_c)
+            self.assertIn("else if (info->flags & IEEE80211_TX_CTL_REQ_TX_STATUS)", patched_pci_c)
+            self.assertNotIn("~(IEEE80211_TX_STAT_NOACK_TRANSMITTED", patched_pci_c)
             mon_h = (tree / "rtw89_mon.h").read_text(encoding="utf-8")
             mon_c = (tree / "rtw89_mon.c").read_text(encoding="utf-8")
-            self.assertIn("#define RTW89_MON_MAX_RATE_TRIES IEEE80211_MAX_TX_RETRY", mon_h)
-            self.assertNotIn("0x3f", mon_h)
-            self.assertIn("IEEE80211_TX_CTRL_RATE_INJECT", mon_c)
+            self.assertIn("min(RTW89_MON_TX_DATA_CNT_LMT_MAX, IEEE80211_MAX_TX_RETRY)", mon_h)
+            self.assertIn("info->control.flags & IEEE80211_TX_CTRL_RATE_INJECT &&", mon_c)
             patched_core_c = (tree / "core.c").read_text(encoding="utf-8")
             self.assertLess(
                 patched_core_c.index("rtw89_core_update_rx_freq_from_ie(rtwdev, skb, rx_status);"),

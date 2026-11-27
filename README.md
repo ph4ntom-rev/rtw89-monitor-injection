@@ -17,7 +17,7 @@ idle across monitor restarts. Firmware is not modified.
 | | |
 | :--- | :--- |
 | Upstream status | **Merged into `pkshih/rtw.git` `rtw-next`** (2026-11-22, [applied notice](https://lore.kernel.org/linux-wireless/63269466-8c67-461e-a29b-f64bb0d47f6a@RTKEXHMBS05.realtek.com.tw/)) and `wireless-next` (`rtw-next-2026-11-23`): commits [`0202cb50fe9f`](https://github.com/pkshih/rtw/commit/0202cb50fe9fba862bd1cbc8079b56c9b29a2c4f)..[`92608bb5f14f`](https://github.com/pkshih/rtw/commit/92608bb5f14f4c6f18c987055c5dfd51771ea51d) (`+42/-4`). |
-| Follow-up series | [`[PATCH rtw-next 0/2]`](https://lore.kernel.org/linux-wireless/20261126083141.1470-1-owner@ph4ntom-rev.uz/) posted on `linux-wireless` (2026-11-26; Patchwork [`#15025099`](https://patchwork.kernel.org/project/linux-wireless/patch/20261126083141.1470-2-owner@ph4ntom-rev.uz/), [`#15025100`](https://patchwork.kernel.org/project/linux-wireless/patch/20261126083141.1470-3-owner@ph4ntom-rev.uz/), `delegate=pkshih`); local patches in [`patches/followup-v1/`](patches/followup-v1/) against base [`18d0bedbb5f0`](https://github.com/pkshih/rtw/commit/18d0bedbb5f0538396cb7f763ed9cd1dd69c5b23). |
+| Follow-up series | [`[PATCH rtw-next v2 0/2]`](https://lore.kernel.org/linux-wireless/20261127101307.15-1-owner@ph4ntom-rev.uz/) posted on `linux-wireless` (2026-11-27; Patchwork [`#15029212`](https://patchwork.kernel.org/project/linux-wireless/patch/20261127101307.15-2-owner@ph4ntom-rev.uz/), [`#15029213`](https://patchwork.kernel.org/project/linux-wireless/patch/20261127101307.15-3-owner@ph4ntom-rev.uz/), `delegate=pkshih`); local patches in [`patches/followup-v2/`](patches/followup-v2/) against base [`18d0bedbb5f0`](https://github.com/pkshih/rtw/commit/18d0bedbb5f0538396cb7f763ed9cd1dd69c5b23). |
 | Mailing list (v8) | [`[PATCH rtw-next v8 0/5]`](https://lore.kernel.org/linux-wireless/20261119080328.391-1-owner@ph4ntom-rev.uz/) (`5/5 Acked-by: Ping-Ke Shih`, `3/5 Reviewed-by: Zong-Zhe Yang`); local patches in [`patches/v8/`](patches/v8/) against base [`0bdc579dbfc2`](https://github.com/pkshih/rtw/commit/0bdc579dbfc251a6b6838ee9459b6771b948c617). |
 | Build & static checks | Each patch builds on its own; `W=1` and sparse (`C=1`) with `CONFIG_PROVE_LOCKING=y` show `0` new warnings; `checkpatch.pl --strict` reports `0` errors/warnings/checks; `patch_rtw89.py` verified across `v6.1`, `v6.6`, `v6.12` (Gen 1), `v6.15`, `v6.18` (Gen 2), and `v7.4-rc1` with Kbuild `make W=1 C=1 modules` on LTS `v6.6`, `v6.12`, `v6.18`, and `v7.4-rc1` in [CI](.github/workflows/ci.yml). |
 | Runtime & FW verification | **RTL8852AE** (`10ec:8852`, firmware `rtw89/rtw8852a_fw-1.bin` `0.13.36.2`, Linux `7.1.5+kali-amd64`) — verified in IDA Pro 9.5 and live-tested via `tracefs`/kprobes + `verify_hardware.py` (`PASS`), see [validation & screenshots](docs/PREFLIGHT_VALIDATION.md). |
@@ -33,12 +33,12 @@ idle across monitor restarts. Firmware is not modified.
 | 4 | [`4175fc84dbe9`](https://github.com/pkshih/rtw/commit/4175fc84dbe9680c7a4ab18aa7fa48b7e3bdede1) | `wifi: rtw89: avoid reading seq_ctrl on control frames` | fix (`ieee80211_is_ctl()`) |
 | 5 | [`92608bb5f14f`](https://github.com/pkshih/rtw/commit/92608bb5f14f4c6f18c987055c5dfd51771ea51d) | `wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for injected frames` | injection (`!ASSIGN_SEQ`, `NO_ACK`, `max_rate_tries`) |
 
-### Follow-up fixes (`patches/followup-v1/`)
+### Follow-up fixes (`patches/followup-v2/`)
 
 | # | Lore (`linux-wireless`) | Patch | Kind |
 | :-- | :--- | :--- | :--- |
-| 1 | [`1/2`](https://lore.kernel.org/linux-wireless/20261126083141.1470-2-owner@ph4ntom-rev.uz/) | `wifi: rtw89: fix retry limit and NO_ACK status for injected frames` | fix (`RATE_INJECT`, `IEEE80211_MAX_TX_RETRY`, `mac.h` `NO_ACK`), `Fixes: 92608bb5f14f` |
-| 2 | [`2/2`](https://lore.kernel.org/linux-wireless/20261126083141.1470-3-owner@ph4ntom-rev.uz/) | `wifi: rtw89: pci: fix TX status and counters for NO_ACK frames` | fix (`pci.c` `NOACK_TRANSMITTED` vs `ACK` + ring counters), `Fixes: e3ec7017f6a2` + `Cc: stable` |
+| 1 | [`1/2`](https://lore.kernel.org/linux-wireless/20261127101307.15-2-owner@ph4ntom-rev.uz/) | `wifi: rtw89: fix retry limit and NO_ACK status for injected frames` | fix (`RATE_INJECT`, `min(0x3f, IEEE80211_MAX_TX_RETRY)`, `mac.h` `NO_ACK`), `Fixes: 92608bb5f14f` |
+| 2 | [`2/2`](https://lore.kernel.org/linux-wireless/20261127101307.15-3-owner@ph4ntom-rev.uz/) | `wifi: rtw89: pci: fix NO_ACK TX status reporting` | fix (`pci.c` `NOACK_TRANSMITTED` vs `ACK` + TX failure log guard) |
 
 Details of every patch and the `rtw89_mon` out-of-tree layer are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the
@@ -129,7 +129,8 @@ sudo ip link set mon0act up
 ## Repository layout
 
 ```text
-patches/followup-v1/   2-patch follow-up series + cover letter on rtw-next (18d0bedbb5f0)
+patches/followup-v2/   v2 follow-up 2-patch series + cover letter on rtw-next (18d0bedbb5f0)
+patches/followup-v1/   v1 follow-up series, kept for reference
 patches/v8/            merged 5-patch upstream series + cover letter (5/5 Acked-by)
 patches/v2..v7/        earlier versions, kept for reference
 src/rtw89_mon.{c,h}    helper code linked into rtw89_core by patch_rtw89.py

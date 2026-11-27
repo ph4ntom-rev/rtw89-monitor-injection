@@ -1,0 +1,81 @@
+From 9af969adf1d1c207b2bb6cea880f73642233de76 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Fri, 27 Nov 2026 13:30:37 +0500
+Subject: [PATCH rtw-next v2 1/2] wifi: rtw89: fix retry limit and NO_ACK
+ status for injected frames
+
+mac80211 clears IEEE80211_TX_CTRL_RATE_INJECT if the injected rate is
+unsupported, but still fills rates[0].count. Check RATE_INJECT before
+applying rates[0].count in rtw89_core_tx_update_injection().
+
+Cap hw->max_rate_tries at min(RTW89_TX_DATA_CNT_LMT_MAX,
+IEEE80211_MAX_TX_RETRY) so radiotap retry counts do not overflow the
+5-bit rates[0].count field.
+
+In rtw89_tx_rpt_tx_status(), setting IEEE80211_TX_STAT_NOACK_TRANSMITTED
+on dropped NO_ACK skbs (MACID_DROP or LIFE_TIME) makes mac80211 count
+them as transmitted instead of failed. Only set NOACK_TRANSMITTED on
+RTW89_TX_DONE, or on RTW89_TX_RETRY_LIMIT for AX unicast NO_ACK frames
+sent once with tx_cnt_lmt = 1, and do not set IEEE80211_TX_STAT_ACK on
+NO_ACK frames.
+
+Fixes: 92608bb5f14f ("wifi: rtw89: honor ASSIGN_SEQ, retries, and NO_ACK for injected frames")
+Reported-by: Luka Gejak <luka.gejak@linux.dev>
+Closes: https://lore.kernel.org/linux-wireless/7904907C-A864-4DE9-AE9B-65082A38B29B@linux.dev/
+Reported-by: Ahmet Zeren <niko3x@proton.me>
+Closes: https://lore.kernel.org/linux-wireless/Qmyu_zaapR7fisQhYB1W9CDM3OG849otNXR4xWRbIaRocvy40VyY4N2Jte4IHqD33nCI_txHle2bL5F7S0b6Bv_uXvCyk9MJ35CFHWzopyE=@proton.me/
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/core.c |  5 +++--
+ drivers/net/wireless/realtek/rtw89/mac.h  | 11 ++++++-----
+ 2 files changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/core.c b/drivers/net/wireless/realtek/rtw89/core.c
+index 31d52fb997..ce5c5ff5c8 100644
+--- a/drivers/net/wireless/realtek/rtw89/core.c
++++ b/drivers/net/wireless/realtek/rtw89/core.c
+@@ -1274,7 +1274,8 @@ static void rtw89_core_tx_update_injection(struct rtw89_dev *rtwdev,
+ 		desc_info->no_ack = true;
+ 		desc_info->tx_cnt_lmt_en = true;
+ 		desc_info->tx_cnt_lmt = 1;
+-	} else if (info->control.rates[0].count) {
++	} else if (info->control.flags & IEEE80211_TX_CTRL_RATE_INJECT &&
++		   info->control.rates[0].count) {
+ 		desc_info->tx_cnt_lmt_en = true;
+ 		desc_info->tx_cnt_lmt = info->control.rates[0].count;
+ 	}
+@@ -7561,7 +7562,7 @@ static int rtw89_core_register_hw(struct rtw89_dev *rtwdev)
+ 	hw->queues = IEEE80211_NUM_ACS;
+ 	hw->max_rx_aggregation_subframes = chip->max_rx_agg_num;
+ 	hw->max_tx_aggregation_subframes = chip->max_tx_agg_num;
+-	hw->max_rate_tries = RTW89_TX_DATA_CNT_LMT_MAX;
++	hw->max_rate_tries = min(RTW89_TX_DATA_CNT_LMT_MAX, IEEE80211_MAX_TX_RETRY);
+ 	hw->uapsd_max_sp_len = IEEE80211_WMM_IE_STA_QOSINFO_SP_ALL;
+ 
+ 	hw->radiotap_mcs_details |= IEEE80211_RADIOTAP_MCS_HAVE_FEC |
+diff --git a/drivers/net/wireless/realtek/rtw89/mac.h b/drivers/net/wireless/realtek/rtw89/mac.h
+index c94b34b927..748945bcda 100644
+--- a/drivers/net/wireless/realtek/rtw89/mac.h
++++ b/drivers/net/wireless/realtek/rtw89/mac.h
+@@ -1896,12 +1896,13 @@ void rtw89_tx_rpt_tx_status(struct rtw89_dev *rtwdev, struct sk_buff *skb,
+ 	info = IEEE80211_SKB_CB(skb);
+ 	ieee80211_tx_info_clear_status(info);
+ 
+-	if (info->flags & IEEE80211_TX_CTL_NO_ACK)
+-		info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
+-	if (tx_status == RTW89_TX_DONE)
++	if (info->flags & IEEE80211_TX_CTL_NO_ACK) {
++		if (tx_status == RTW89_TX_DONE ||
++		    tx_status == RTW89_TX_RETRY_LIMIT)
++			info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
++	} else if (tx_status == RTW89_TX_DONE) {
+ 		info->flags |= IEEE80211_TX_STAT_ACK;
+-	else
+-		info->flags &= ~IEEE80211_TX_STAT_ACK;
++	}
+ 
+ 	ieee80211_tx_status_irqsafe(rtwdev->hw, skb);
+ }
+-- 
+2.53.0
+

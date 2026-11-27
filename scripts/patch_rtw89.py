@@ -956,14 +956,24 @@ def patch_pci_c(pci_c_path: Path) -> list:
     new_body, cnt = re.subn(
         r"(?:\tif\s*\(info->flags\s*&\s*IEEE80211_TX_CTL_NO_ACK\)\s*\n"
         r"\t\tinfo->flags\s*\|=\s*IEEE80211_TX_STAT_NOACK_TRANSMITTED;\s*\n+)?"
-        r"\tif\s*\(tx_status\s*==\s*RTW89_TX_DONE\)\s*\{",
-        f"\t/* {MARKER} */\n"
-        "\tinfo->flags &= ~(IEEE80211_TX_STAT_NOACK_TRANSMITTED |\n"
-        "\t\t\t IEEE80211_TX_STAT_ACK);\n"
-        "\tif ((info->flags & IEEE80211_TX_CTL_NO_ACK) &&\n"
-        "\t    (tx_status == RTW89_TX_DONE || tx_status == RTW89_TX_RETRY_LIMIT)) {\n"
-        "\t\tinfo->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;\n"
-        "\t} else if (tx_status == RTW89_TX_DONE) {",
+        r"\tif\s*\(tx_status\s*==\s*RTW89_TX_DONE\)\s*\{\s*\n"
+        r"\t\tinfo->flags\s*\|=\s*IEEE80211_TX_STAT_ACK;\s*\n"
+        r"(\t\ttx_ring->tx_acked\+\+;\s*\n"
+        r"\t\}\s*else\s*\{\s*\n)"
+        r"(\t\tif\s*\(info->flags\s*&\s*IEEE80211_TX_CTL_REQ_TX_STATUS\))?",
+        lambda m: (
+            f"\t/* {MARKER} */\n"
+            "\tif (tx_status == RTW89_TX_DONE) {\n"
+            "\t\tif (info->flags & IEEE80211_TX_CTL_NO_ACK)\n"
+            "\t\t\tinfo->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;\n"
+            "\t\telse\n"
+            "\t\t\tinfo->flags |= IEEE80211_TX_STAT_ACK;\n"
+            + m.group(1)
+            + "\t\tif (info->flags & IEEE80211_TX_CTL_NO_ACK &&\n"
+            "\t\t    tx_status == RTW89_TX_RETRY_LIMIT)\n"
+            "\t\t\tinfo->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;\n"
+            + ("\t\telse if (info->flags & IEEE80211_TX_CTL_REQ_TX_STATUS)" if m.group(2) else "")
+        ),
         body,
         count=1,
     )
@@ -972,7 +982,7 @@ def patch_pci_c(pci_c_path: Path) -> list:
 
     src = src[:span[1]] + new_body + src[span[2]:]
     pci_c_path.write_text(src, encoding="utf-8", newline="\n")
-    return ["fixed NO_ACK vs ACK TX status flags and counters in rtw89_pci_tx_status()"]
+    return ["fixed NO_ACK vs ACK TX status flags in rtw89_pci_tx_status()"]
 
 
 def patch_mac_h(mac_h_path: Path) -> list:
@@ -994,8 +1004,6 @@ def patch_mac_h(mac_h_path: Path) -> list:
         r"\t\tinfo->flags\s*\|=\s*IEEE80211_TX_STAT_ACK;\n"
         r"(?:\telse\s*\n\t\tinfo->flags\s*&=\s*~IEEE80211_TX_STAT_ACK;\n)?",
         f"\t/* {MARKER} */\n"
-        "\tinfo->flags &= ~(IEEE80211_TX_STAT_NOACK_TRANSMITTED |\n"
-        "\t\t\t IEEE80211_TX_STAT_ACK);\n"
         "\tif (info->flags & IEEE80211_TX_CTL_NO_ACK) {\n"
         "\t\tif (tx_status == RTW89_TX_DONE ||\n"
         "\t\t    tx_status == RTW89_TX_RETRY_LIMIT)\n"

@@ -109,8 +109,9 @@ transmission.
   `rtw89_traffic_stats_accu()`, `rtw89_wow_parse_akm()`, `rtw89_core_tx_btc_spec_pkt_notify()`,
   `rtw89_core_tx_update_he_qos_htc()`, and `rtw89_core_tx_update_ampdu_info()`.
 - **Patch 9:**
-  - Sets `hw->max_rate_tries = IEEE80211_MAX_TX_RETRY` (`31`, matching the 5-bit
-    `struct ieee80211_tx_rate::count` bitfield ceiling in `mac80211`; `mac80211` otherwise
+  - Sets `hw->max_rate_tries = min(RTW89_TX_DATA_CNT_LMT_MAX, IEEE80211_MAX_TX_RETRY)` (`31`,
+    matching the 5-bit `struct ieee80211_tx_rate::count` bitfield ceiling in `mac80211` while
+    preserving the hardware 6-bit `tx_cnt_lmt` limit constant `0x3f`; `mac80211` otherwise
     clamps `rates[0].count` to `1` when `max_rate_tries == 0`, whereas values above `31`
     overflow `u16 count:5`).
   - Clamps positive radiotap HT/VHT/legacy rate indices to hardware limits (`umin`).
@@ -125,10 +126,11 @@ transmission.
     `IEEE80211_TX_CTRL_RATE_INJECT` is set. Because AX TXWD v0 lacks a per-packet `NO_ACK`
     bit and reports `RTW89_TX_RETRY_LIMIT` on unacknowledged unicast `NO_ACK` frames (and
     `RTW89_TX_DONE` on broadcast / QoS No-Ack / BE `NO_ACK`), sets
-    `IEEE80211_TX_STAT_NOACK_TRANSMITTED` (`mac.h` / `pci.c`) exclusively (without
-    `IEEE80211_TX_STAT_ACK` or `tx_ring->tx_acked++`) on `RTW89_TX_DONE` /
-    `RTW89_TX_RETRY_LIMIT`, and suppresses false `tx_ring->tx_retry_lmt` increments while
-    leaving dropped frames (`RTW89_TX_LIFE_TIME` / `RTW89_TX_MACID_DROP`) unmarked.
+    `IEEE80211_TX_STAT_NOACK_TRANSMITTED` (`mac.h` / `pci.c`) instead of
+    `IEEE80211_TX_STAT_ACK` on `RTW89_TX_DONE` / `RTW89_TX_RETRY_LIMIT`, skips the PCI TX
+    failure debug log when `NOACK_TRANSMITTED` is set, keeps PCI `tx_ring` hardware completion
+    counters intact, and leaves dropped frames (`RTW89_TX_LIFE_TIME` / `RTW89_TX_MACID_DROP`)
+    unmarked.
 
 ## 7. Channel restoration when leaving idle on non-chanctx devices (patch 10)
 

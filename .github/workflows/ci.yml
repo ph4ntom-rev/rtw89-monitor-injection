@@ -154,7 +154,8 @@ jobs:
           # UNKNOWN_COMMIT_ID: the ids in Fixes: tags cannot be resolved in a shallow clone
           bash ../repo/scripts/prepare_submission.sh --kernel-dir .
           perl ./scripts/checkpatch.pl --strict --no-tree --ignore UNKNOWN_COMMIT_ID \
-            ../repo/patches/followup-v1/000*-wifi-*.patch
+            ../repo/patches/followup-v1/000*-wifi-*.patch \
+            ../repo/patches/followup-v2/v2-000*-wifi-*.patch
 
       - name: Out-of-tree integrator builds against the same kernel
         run: |

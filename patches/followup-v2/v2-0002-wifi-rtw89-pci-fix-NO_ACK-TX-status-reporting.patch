@@ -1,0 +1,50 @@
+From 80efa6ffdb3850b560effa3dc9ec870ca5704089 Mon Sep 17 00:00:00 2001
+From: Enver Ikromov <owner@ph4ntom-rev.uz>
+Date: Fri, 27 Nov 2026 13:30:41 +0500
+Subject: [PATCH rtw-next v2 2/2] wifi: rtw89: pci: fix NO_ACK TX status
+ reporting
+
+PCIe devices report TX status via rtw89_pci_tx_status() rather than
+rtw89_tx_rpt_tx_status(). Currently it sets
+IEEE80211_TX_STAT_NOACK_TRANSMITTED even when a NO_ACK skb was dropped
+(MACID_DROP or LIFE_TIME), so mac80211 counts dropped frames as sent,
+and it also sets IEEE80211_TX_STAT_ACK on RTW89_TX_DONE.
+
+Only set NOACK_TRANSMITTED on RTW89_TX_DONE or RTW89_TX_RETRY_LIMIT,
+skip the TX failure debug log in that case, and do not set
+IEEE80211_TX_STAT_ACK for NO_ACK frames.
+
+Signed-off-by: Enver Ikromov <owner@ph4ntom-rev.uz>
+---
+ drivers/net/wireless/realtek/rtw89/pci.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/pci.c b/drivers/net/wireless/realtek/rtw89/pci.c
+index 76523d0578..2b6a5e2222 100644
+--- a/drivers/net/wireless/realtek/rtw89/pci.c
++++ b/drivers/net/wireless/realtek/rtw89/pci.c
+@@ -470,13 +470,17 @@ static void rtw89_pci_tx_status(struct rtw89_dev *rtwdev,
+ 	info = IEEE80211_SKB_CB(skb);
+ 	ieee80211_tx_info_clear_status(info);
+ 
+-	if (info->flags & IEEE80211_TX_CTL_NO_ACK)
+-		info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
+ 	if (tx_status == RTW89_TX_DONE) {
+-		info->flags |= IEEE80211_TX_STAT_ACK;
++		if (info->flags & IEEE80211_TX_CTL_NO_ACK)
++			info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
++		else
++			info->flags |= IEEE80211_TX_STAT_ACK;
+ 		tx_ring->tx_acked++;
+ 	} else {
+-		if (info->flags & IEEE80211_TX_CTL_REQ_TX_STATUS)
++		if (info->flags & IEEE80211_TX_CTL_NO_ACK &&
++		    tx_status == RTW89_TX_RETRY_LIMIT)
++			info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
++		else if (info->flags & IEEE80211_TX_CTL_REQ_TX_STATUS)
+ 			rtw89_debug(rtwdev, RTW89_DBG_FW,
+ 				    "failed to TX of status %x\n", tx_status);
+ 		switch (tx_status) {
+-- 
+2.53.0
+
